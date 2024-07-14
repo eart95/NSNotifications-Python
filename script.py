@@ -4,15 +4,19 @@ import jwt
 import time
 
 # Configuration
-NIGHTSCOUT_URL = 'https://night--elegant-plants--nhkhrw5q7kwt.code.run/api/v1/entries.json?count=1'
+NIGHTSCOUT_URL = os.getenv('NIGHTSCOUT_URL')
+#NIGHTSCOUT_URL = 'https://night--elegant-plants--nhkhrw5q7kwt.code.run/api/v1/entries.json?count=1'
+NIGHTSCOUT_TOKEN = os.getenv('NIGHTSCOUT_TOKEN')
 #DEVICE_TOKENS = ['DEVICE_TOKEN1', 'DEVICE_TOKEN2']  # List of device tokens
 #APNS_KEY_ID = 'YOUR_KEY_ID'
 #APNS_TEAM_ID = 'YOUR_TEAM_ID'
 #APNS_BUNDLE_ID = 'YOUR_BUNDLE_ID'
 #APNS_P8_FILE = 'path/to/AuthKey_YOUR_KEY_ID.p8'
 
+nsURL = NIGHTSCOUT_URL + '/api/v1/entries.json?count=1&token=' + 
+
 def get_latest_glucose_level():
-    response = requests.get(NIGHTSCOUT_URL)
+    response = requests.get(nsURL)
     if response.status_code == 200:
         data = response.json()
         return data[0]['sgv']  # Assuming 'sgv' is the glucose level field

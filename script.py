@@ -6,7 +6,6 @@ import time
 
 # Configuration
 NIGHTSCOUT_URL = os.getenv('NIGHTSCOUT_URL')
-#NIGHTSCOUT_URL = 'https://night--elegant-plants--nhkhrw5q7kwt.code.run/api/v1/entries.json?count=1'
 NIGHTSCOUT_TOKEN = os.getenv('NIGHTSCOUT_TOKEN')
 #DEVICE_TOKENS = ['DEVICE_TOKEN1', 'DEVICE_TOKEN2']  # List of device tokens
 #APNS_KEY_ID = 'YOUR_KEY_ID'

@@ -13,7 +13,7 @@ NIGHTSCOUT_TOKEN = os.getenv('NIGHTSCOUT_TOKEN')
 #APNS_BUNDLE_ID = 'YOUR_BUNDLE_ID'
 #APNS_P8_FILE = 'path/to/AuthKey_YOUR_KEY_ID.p8'
 
-nsURL = NIGHTSCOUT_URL + '/api/v1/entries.json?count=1&token=' + 
+nsURL = NIGHTSCOUT_URL + '/api/v1/entries.json?count=1&token=' + NIGHTSCOUT_TOKEN
 
 def get_latest_glucose_level():
     response = requests.get(nsURL)

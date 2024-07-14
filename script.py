@@ -12,6 +12,7 @@ NIGHTSCOUT_TOKEN = os.getenv('NIGHTSCOUT_TOKEN')
 #APNS_TEAM_ID = 'YOUR_TEAM_ID'
 #APNS_BUNDLE_ID = 'YOUR_BUNDLE_ID'
 #APNS_P8_FILE = 'path/to/AuthKey_YOUR_KEY_ID.p8'
+SECRET_FILE = 'glucose_data.json'
 
 nsURL = NIGHTSCOUT_URL + '/api/v1/entries.json?count=1&token=' + NIGHTSCOUT_TOKEN
 
@@ -21,6 +22,16 @@ def get_latest_glucose_level():
         data = response.json()
         return data[0]['sgv']  # Assuming 'sgv' is the glucose level field
     return None
+
+def load_secret():
+    if os.path.exists(SECRET_FILE):
+        with open(SECRET_FILE, 'r') as f:
+            return json.load(f)
+    return {'last_checked': None, 'last_glucose_level': None}
+
+def save_secret(data):
+    with open(SECRET_FILE, 'w') as f:
+        json.dump(data, f)
 
 '''
 def send_push_notification(token, title, body):
@@ -65,6 +76,7 @@ def main():
     print('hello world')
     glucose_level = get_latest_glucose_level()
     if glucose_level is not None:
+        data = load_secret()
         if glucose_level > 180:  # Example condition for high glucose level
             print('high')
             #for device_token in DEVICE_TOKENS:
@@ -76,5 +88,11 @@ def main():
             #for device_token in DEVICE_TOKENS:
                 #send_push_notification(device_token, 'Low Glucose Level', f'Your glucose level is {glucose_level}.')
 
+    # Save current glucose level and timestamp
+        data['last_checked'] = time.time()
+        data['last_glucose_level'] = glucose_level
+        save_secret(data)
+
+        
 if __name__ == '__main__':
     main()

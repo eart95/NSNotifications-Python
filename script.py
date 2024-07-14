@@ -58,6 +58,7 @@ def send_push_notification(token, title, body):
 '''
 
 def main():
+    print('hello world')
     glucose_level = get_latest_glucose_level()
     if glucose_level is not None:
         if glucose_level > 180:  # Example condition for high glucose level

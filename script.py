@@ -109,19 +109,16 @@ def process_data(data):
 def getBGinTime(minutes_ago, df):
     
     #Returns the blood sugar level a certain number of minutes ago.
+    most_recent_date = df.index.max()
     
-    target_time = datetime.utcnow() - timedelta(minutes=minutes_ago)
+    target_time = most_recent_date - timedelta(minutes=minutes_ago)
     target_time = target_time.replace(second=0, microsecond=0)
 
-    # Find the closest timestamp
-    closest_index = df.index.get_indexer([target_time], method='nearest')[0]
-    closest_time = df.index[closest_index]
-
-    # Check if the closest time is within an acceptable range (e.g., 10 minutes)
-    if abs((closest_time - target_time).total_seconds()) <= 600:
-        return df.loc[closest_time, 'sgv']
+    if target_time in df.index:
+        return df.loc[target_time, 'sgv']
     else:
         return None
+
 
 def getCurrentTime():
     return datetime.now()

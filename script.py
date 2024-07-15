@@ -164,6 +164,8 @@ def main():
     # Process data to fill gaps
     df = process_data(bg_data)
     current_bg = getBGinTime(0, df)
+    print(bg_data)
+    print(df)
     print(current_bg)
     print(getBGinTime(1, df))
 

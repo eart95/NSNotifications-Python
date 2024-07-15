@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from requests.auth import HTTPBasicAuth
 #import datetime
 
 # Constants

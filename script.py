@@ -10,7 +10,7 @@ from requests.auth import HTTPBasicAuth
 # Constants
 EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
-HIGH_BG_THRESHOLD = 100          # mg/dL SHOULD BE 180
+HIGH_BG_THRESHOLD = 180          # mg/dL
 LOW_BG_THRESHOLD = 70            # mg/dL
 RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
 TREND_PERIOD = 60                # minutes
@@ -45,7 +45,7 @@ def save_data(data):
     headers = {
         'Content-Type': 'application/json'
     }
-    response = requests.post(URL, auth=HTTPBasicAuth(USERNAME, PASSWORD), headers=headers, data=json.dumps(data))
+    response = requests.put(URL, auth=HTTPBasicAuth(USERNAME, PASSWORD), headers=headers, data=json.dumps(data))
     if response.status_code == 200:
         print('Data saved successfully.')
     else:

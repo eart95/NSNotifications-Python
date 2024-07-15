@@ -66,7 +66,7 @@ def get_nightscout_data(url, access_token, hours=8):
     
     #Fetches blood sugar data from the Nightscout server for the last specified hours.
     
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=hours)
     start_time_str = start_time.isoformat() + 'Z'
     end_time_str = end_time.isoformat() + 'Z'
@@ -105,7 +105,7 @@ def getBGinTime(minutes_ago, df):
     
     #Returns the blood sugar level a certain number of minutes ago.
     
-    target_time = datetime.utcnow() - timedelta(minutes=minutes_ago)
+    target_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     target_time = target_time.replace(second=0, microsecond=0)
 
     if target_time in df.index:
@@ -115,7 +115,7 @@ def getBGinTime(minutes_ago, df):
 
 
 def getCurrentTime():
-    return datetime.datetime.now()
+    return datetime.now(timezone.utc)
 
 # Alert Functions
 def trigger_extreme_high_bg_alert():
@@ -176,7 +176,7 @@ def main():
         cool_down_period = COOL_DOWN_PERIODS[alert_name]
 
         if last_alert_time:
-            last_alert_time = datetime.datetime.fromisoformat(last_alert_time)
+            last_alert_time = datetime.fromisoformat(last_alert_time)
             if current_time - last_alert_time < datetime.timedelta(minutes=cool_down_period):
                 last_alert_priority = data.get('last_alert_priority', float('inf'))
                 if priority < last_alert_priority:
@@ -211,7 +211,7 @@ def main():
     # Time-in-Range
     out_of_range_duration = data.get('out_of_range_duration', 0)
     last_out_of_range_time = data.get('last_out_of_range_time', current_time.isoformat())
-    last_out_of_range_time = datetime.datetime.fromisoformat(last_out_of_range_time)
+    last_out_of_range_time = datetime.fromisoformat(last_out_of_range_time)
     
     if current_bg < TIME_IN_RANGE[0] or current_bg > TIME_IN_RANGE[1]:
         out_of_range_duration += (current_time - last_out_of_range_time).total_seconds() / 60
@@ -225,7 +225,7 @@ def main():
     # Post-Meal
     meal_time = data.get('last_meal_time')
     if meal_time:
-        meal_time = datetime.datetime.fromisoformat(meal_time)
+        meal_time = datetime.fromisoformat(meal_time)
         if current_time - meal_time >= datetime.timedelta(minutes=POST_MEAL_PERIOD):
             bg_change = current_bg - getBGinTime(POST_MEAL_PERIOD, df)
             should_trigger_alert("post_meal", 6, abs(bg_change) > POST_MEAL_THRESHOLD)

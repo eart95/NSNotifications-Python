@@ -10,7 +10,7 @@ from requests.auth import HTTPBasicAuth
 # Constants
 EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
-HIGH_BG_THRESHOLD = 180          # mg/dL
+HIGH_BG_THRESHOLD = 100          # mg/dL SHOULD BE 180
 LOW_BG_THRESHOLD = 70            # mg/dL
 RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
 TREND_PERIOD = 60                # minutes
@@ -165,10 +165,6 @@ def main():
     # Process data to fill gaps
     df = process_data(bg_data)
     current_bg = getBGinTime(0, df)
-    print(bg_data)
-    print(df)
-    print(current_bg)
-    print(getBGinTime(1, df))
 
     # Hysteresis adjustment for priority 1 and 2 alerts
     hysteresis_extreme_high = EXTREME_HIGH_BG_THRESHOLD + 10 if current_bg > EXTREME_HIGH_BG_THRESHOLD + 10 else EXTREME_HIGH_BG_THRESHOLD - 10

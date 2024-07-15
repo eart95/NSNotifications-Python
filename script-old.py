@@ -72,7 +72,7 @@ def send_push_notification(token, title, body):
     print('Push Notification Sent:', response.status_code, response.reason)
 '''
 
-def main():
+def main_old():
     print('hello world')
     glucose_level = get_latest_glucose_level()
     if glucose_level is not None:
@@ -93,6 +93,8 @@ def main():
         data['last_glucose_level'] = glucose_level
         save_secret(data)
 
-        
+
+'''
 if __name__ == '__main__':
     main()
+    '''

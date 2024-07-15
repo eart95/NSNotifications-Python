@@ -148,7 +148,7 @@ def trigger_post_meal_alert():
     print("Post-Meal Alert Triggered")
 
 # Main Logic
-def check_alerts():
+def main():
     current_time = getCurrentTime()
     data = read_data()
 
@@ -237,5 +237,5 @@ def check_alerts():
         data['last_alert_priority'] = highest_priority
         save_data(data)
 
-# Example usage
-check_alerts()
+if __name__ == '__main__':
+    main()

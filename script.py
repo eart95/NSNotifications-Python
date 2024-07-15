@@ -66,7 +66,7 @@ def get_nightscout_data(url, access_token, hours=8):
     
     #Fetches blood sugar data from the Nightscout server for the last specified hours.
     
-    end_time = datetime.now(timezone.utc)
+    end_time = datetime.now()
     start_time = end_time - timedelta(hours=hours)
     start_time_str = start_time.isoformat() + 'Z'
     end_time_str = end_time.isoformat() + 'Z'
@@ -105,7 +105,7 @@ def getBGinTime(minutes_ago, df):
     
     #Returns the blood sugar level a certain number of minutes ago.
     
-    target_time = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    target_time = datetime.now() - timedelta(minutes=minutes_ago)
     target_time = target_time.replace(second=0, microsecond=0)
 
     if target_time in df.index:
@@ -115,7 +115,7 @@ def getBGinTime(minutes_ago, df):
 
 
 def getCurrentTime():
-    return datetime.now(timezone.utc)
+    return datetime.now()
 
 # Alert Functions
 def trigger_extreme_high_bg_alert():

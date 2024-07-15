@@ -242,6 +242,7 @@ def main():
         trigger_function()
         data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
         data['last_alert_priority'] = highest_priority
+        print(data)
         save_data(data)
 
 if __name__ == '__main__':

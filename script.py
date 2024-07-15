@@ -74,7 +74,7 @@ def get_nightscout_data(url, access_token, hours=8):
         'token': access_token,
         'find[dateString][$gte]': start_time_str,
         'find[dateString][$lte]': end_time_str,
-        'count=1000'
+        'count': 1000
     }
 
     response = requests.get(f"{url}/api/v1/entries.json", params=params)

@@ -99,7 +99,7 @@ def process_data(data):
     df_sgv = df[['sgv']]
 
     # Resample data to 1-minute intervals
-    df_resampled = df_sgv.resample('1T').mean()
+    df_resampled = df_sgv.resample('min').mean()
 
     # Interpolate missing values
     df_resampled['sgv'] = df_resampled['sgv'].interpolate()

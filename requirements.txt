@@ -2,4 +2,3 @@ requests
 pyjwt
 pandas
 numpy
-json

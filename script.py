@@ -164,6 +164,8 @@ def main():
     # Process data to fill gaps
     df = process_data(bg_data)
     current_bg = getBGinTime(0, df)
+    print(current_bg)
+    print(getBGinTime(1, df))
 
     # Hysteresis adjustment for priority 1 and 2 alerts
     hysteresis_extreme_high = EXTREME_HIGH_BG_THRESHOLD + 10 if current_bg > EXTREME_HIGH_BG_THRESHOLD + 10 else EXTREME_HIGH_BG_THRESHOLD - 10

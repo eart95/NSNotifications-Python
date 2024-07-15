@@ -2,7 +2,7 @@ import os
 import json
 import requests
 import pandas as pd
-import numpy as np
+#import numpy as np
 from datetime import datetime, timedelta
 from requests.auth import HTTPBasicAuth
 #import datetime
@@ -91,16 +91,20 @@ def process_data(data):
     
     # Convert data to DataFrame
     df = pd.DataFrame(data)
+    # Convert dateString to datetime and set as index
     df['date'] = pd.to_datetime(df['dateString'])
     df.set_index('date', inplace=True)
 
+    # Keep only the 'sgv' column for resampling
+    df_sgv = df[['sgv']]
+
     # Resample data to 1-minute intervals
-    df = df.resample('1T').mean()
+    df_resampled = df_sgv.resample('1T').mean()
 
     # Interpolate missing values
-    df['sgv'] = df['sgv'].interpolate()
+    df_resampled['sgv'] = df_resampled['sgv'].interpolate()
 
-    return df
+    return df_resampled
 
 def getBGinTime(minutes_ago, df):
     

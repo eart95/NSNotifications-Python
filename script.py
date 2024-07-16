@@ -179,7 +179,8 @@ def main():
 
     def should_trigger_alert(alert_name, priority, condition):
         nonlocal highest_priority, alert_to_trigger
-        last_alert_time = data.get(alert_name, {}).get('last_alert_time')
+        #last_alert_time = data.get(alert_name, {}).get('last_alert_time')
+        last_alert_time = data.get('last_alert_time')
         cool_down_period = COOL_DOWN_PERIODS[alert_name]
 
         if last_alert_time:
@@ -241,7 +242,8 @@ def main():
     if alert_to_trigger:
         trigger_function = globals()[f'trigger_{alert_to_trigger}_alert']
         trigger_function()
-        data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
+        #data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
+        data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority
         print(data)
         save_data(data)

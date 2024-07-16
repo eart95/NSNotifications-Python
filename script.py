@@ -45,7 +45,8 @@ def save_data(data):
     headers = {
         'Content-Type': 'application/json'
     }
-    response = requests.post(URL.replace('NSNotifier-Persistent.json', 'write-JSON.php'), auth=HTTPBasicAuth(USERNAME, PASSWORD), headers=headers, data=json.dumps(data))
+    #response = requests.post(URL.replace('NSNotifier-Persistent.json', 'write-JSON.php'), auth=HTTPBasicAuth(USERNAME, PASSWORD), headers=headers, data=json.dumps(data))
+    response = requests.put(URL, auth=HTTPBasicAuth(USERNAME, PASSWORD), headers=headers, data=json.dumps(data))
     if response.status_code == 200:
         print('Data saved successfully.')
     else:

@@ -10,7 +10,7 @@ from requests.auth import HTTPBasicAuth
 # Constants
 EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
-HIGH_BG_THRESHOLD = 180          # mg/dL
+HIGH_BG_THRESHOLD = 100          # mg/dL --to 180
 LOW_BG_THRESHOLD = 70            # mg/dL
 RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
 TREND_PERIOD = 60                # minutes

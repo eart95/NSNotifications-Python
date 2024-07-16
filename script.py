@@ -241,7 +241,7 @@ def main():
     if alert_to_trigger:
         trigger_function = globals()[f'trigger_{alert_to_trigger}_alert']
         trigger_function()
-        data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
+        data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority
         print(data)
         save_data(data)

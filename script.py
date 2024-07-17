@@ -35,7 +35,7 @@ APNS_P8_FILE = os.getenv('APNS_P8_FILE')
 
 def read_tokens():
     # Read data from file on the server.
-    response = requests.get('http;//nightscout.enricoartuso.com/device_tokens.txt', auth=HTTPBasicAuth(USERNAME, PASSWORD))
+    response = requests.get('http://nightscout.enricoartuso.com/device_tokens.txt', auth=HTTPBasicAuth(USERNAME, PASSWORD))
     if response.status_code == 200:
         data = response.split(',')
         return data

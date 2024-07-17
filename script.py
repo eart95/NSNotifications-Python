@@ -253,7 +253,7 @@ def main():
 
         if last_alert_time:
             last_alert_time = datetime.fromisoformat(last_alert_time)
-            if current_time - last_alert_time < datetime.timedelta(minutes=cool_down_period):
+            if current_time - last_alert_time < timedelta(minutes=cool_down_period):
                 last_alert_priority = data.get('last_alert_priority', float('inf'))
                 if priority < last_alert_priority:
                     if condition:
@@ -302,7 +302,7 @@ def main():
     meal_time = data.get('last_meal_time')
     if meal_time:
         meal_time = datetime.fromisoformat(meal_time)
-        if current_time - meal_time >= datetime.timedelta(minutes=POST_MEAL_PERIOD):
+        if current_time - meal_time >= timedelta(minutes=POST_MEAL_PERIOD):
             bg_change = current_bg - getBGinTime(POST_MEAL_PERIOD, df)
             should_trigger_alert("post_meal", 6, abs(bg_change) > POST_MEAL_THRESHOLD)
 

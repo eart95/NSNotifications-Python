@@ -80,7 +80,7 @@ def send_push_notification(token, title, body):
 
     payload = {
         'iss': APNS_TEAM_ID,
-        'iat': time.time()
+        'iat': datetime.time()
     }
 
     token = jwt.encode(payload, secret, algorithm='ES256', headers=headers)

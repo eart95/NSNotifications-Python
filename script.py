@@ -37,7 +37,7 @@ def read_tokens():
     # Read data from file on the server.
     response = requests.get('http://nightscout.enricoartuso.com/device_tokens.txt', auth=HTTPBasicAuth(USERNAME, PASSWORD))
     if response.status_code == 200:
-        data = response.split(',')
+        data = response.text.split(',')
         return data
     else:
         print('Failed to read data:', response.status_code, response.text)

@@ -33,6 +33,16 @@ APNS_TEAM_ID = os.getenv('APNS_TEAM_ID')
 APNS_BUNDLE_ID = os.getenv('APNS_BUNDLE_ID')
 APNS_P8_FILE = os.getenv('APNS_P8_FILE')
 
+def read_tokens():
+    # Read data from file on the server.
+    response = requests.get('http;//nightscout.enricoartuso.com/device_tokens.txt', auth=HTTPBasicAuth(USERNAME, PASSWORD))
+    if response.status_code == 200:
+        data = response.split(',')
+        return data
+    else:
+        print('Failed to read data:', response.status_code, response.text)
+        return None
+
 DEVICE_TOKENS = read_tokens()
 
 
@@ -117,15 +127,6 @@ def read_data():
         print('Failed to read data:', response.status_code, response.text)
         return None
 
-def read_tokens():
-    # Read data from file on the server.
-    response = requests.get('http;//nightscout.enricoartuso.com/device_tokens.txt', auth=HTTPBasicAuth(USERNAME, PASSWORD))
-    if response.status_code == 200:
-        data = response.split(',')
-        return data
-    else:
-        print('Failed to read data:', response.status_code, response.text)
-        return None
 
 
 

@@ -59,10 +59,19 @@ COOL_DOWN_PERIODS = {
     "post_meal": 120        # minutes
 }
 
+def read_p8_file():
+    # Read data from the JSON file on the server.
+    response = requests.get(APNS_P8_FILE, auth=HTTPBasicAuth(USERNAME, PASSWORD))
+    if response.status_code == 200:
+        data = response.text
+        return data
+    else:
+        print('Failed to read data:', response.status_code, response.text)
+        return None
+
 
 def send_push_notification(token, title, body):
-    with open(APNS_P8_FILE) as f:
-        secret = f.read()
+    secret = read_p8_file()
     
     headers = {
         'alg': 'ES256',

@@ -197,7 +197,7 @@ def trigger_extreme_high_bg_alert():
 def trigger_extreme_low_bg_alert():
     print("Extreme Low BG Alert Triggered")
 
-def trigger_high_bg_alert(bg):
+def trigger_high_bg_alert():
     print("High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         send_push_notification(device_token, 'High blood sugar', 'Your blood sugar is {current_bg}')

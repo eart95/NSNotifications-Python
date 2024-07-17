@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import jwt
 import pandas as pd
 #import numpy as np
 from datetime import datetime, timedelta
@@ -26,6 +27,15 @@ URL = os.getenv('PERSISTENT_STORAGE_URL')
 USERNAME = os.getenv('PERSISTENT_STORAGE_USERNAME')
 PASSWORD = os.getenv('PERSISTENT_STORAGE_PW')
 
+
+APNS_KEY_ID = os.getenv('APNS_KEY_ID')
+APNS_TEAM_ID = os.getenv('APNS_TEAM_ID')
+APNS_BUNDLE_ID = os.getenv('APNS_BUNDLE_ID')
+APNS_P8_FILE = os.getenv('APNS_P8_FILE')
+
+DEVICE_TOKENS = read_tokens()
+
+
 COOL_DOWN_PERIODS = {
     "extreme_high_bg": 30,  # minutes
     "extreme_low_bg": 30,   # minutes
@@ -39,6 +49,51 @@ COOL_DOWN_PERIODS = {
     "post_meal": 120        # minutes
 }
 
+
+def send_push_notification(token, title, body):
+    with open(APNS_P8_FILE) as f:
+        secret = f.read()
+    
+    headers = {
+        'alg': 'ES256',
+        'kid': APNS_KEY_ID,
+    }
+
+    payload = {
+        'iss': APNS_TEAM_ID,
+        'iat': time.time()
+    }
+
+    token = jwt.encode(payload, secret, algorithm='ES256', headers=headers)
+
+    conn = http.client.HTTPSConnection('api.push.apple.com', 443, context=ssl._create_unverified_context())
+
+    notification = {
+        'aps': {
+            'alert': {
+                'title': title,
+                'body': body
+            },
+            'sound': 'default'
+        },
+        'interruption-level': 'time-sensitive'
+    }
+
+
+    conn.request(
+        'POST',
+        f'/3/device/{token}',
+        body=json.dumps(notification),
+        headers={
+            'apns-topic': bundle_id,
+            'authorization': f'bearer {token}',
+            'content-type': 'application/json'
+        }
+    )
+    
+    response = conn.getresponse()
+    print(response.status, response.reason)
+    
 
 def save_data(data):
     # Save data to the JSON file on the server.
@@ -57,6 +112,16 @@ def read_data():
     response = requests.get(URL, auth=HTTPBasicAuth(USERNAME, PASSWORD))
     if response.status_code == 200:
         data = response.json()
+        return data
+    else:
+        print('Failed to read data:', response.status_code, response.text)
+        return None
+
+def read_tokens():
+    # Read data from file on the server.
+    response = requests.get('http;//nightscout.enricoartuso.com/device_tokens.txt', auth=HTTPBasicAuth(USERNAME, PASSWORD))
+    if response.status_code == 200:
+        data = response.split(',')
         return data
     else:
         print('Failed to read data:', response.status_code, response.text)
@@ -131,8 +196,10 @@ def trigger_extreme_high_bg_alert():
 def trigger_extreme_low_bg_alert():
     print("Extreme Low BG Alert Triggered")
 
-def trigger_high_bg_alert():
+def trigger_high_bg_alert(bg):
     print("High BG Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        send_push_notification(device_token, 'High blood sugar', 'Your blood sugar is {current_bg}')
 
 def trigger_low_bg_alert():
     print("Low BG Alert Triggered")

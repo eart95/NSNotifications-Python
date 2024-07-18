@@ -253,13 +253,13 @@ def getCurrentTime():
     return datetime.now()
 
 # Alert Functions
-async def trigger_extreme_high_bg_alert():
+async def trigger_extreme_high_bg_alert(bg):
     print("Extreme High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Very high blood sugar', f'Your blood sugar is {int(bg)}.')
 
-async def trigger_extreme_low_bg_alert():
+async def trigger_extreme_low_bg_alert(bg):
     print("Extreme Low BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
@@ -271,43 +271,43 @@ async def trigger_high_bg_alert(bg):
         #print(device_token)
         await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {int(bg)}.')
 
-async def trigger_low_bg_alert():
+async def trigger_low_bg_alert(bg):
     print("Low BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Low blood sugar', f'Your blood sugar is {int(bg)}.')
 
-async def trigger_rapid_rise_alert():
+async def trigger_rapid_rise_alert(bg):
     print("Rapid Rise Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)}.')
 
-async def trigger_rapid_fall_alert():
+async def trigger_rapid_fall_alert(bg):
     print("Rapid Fall Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)}.')
 
-async def trigger_upward_trend_alert():
+async def trigger_upward_trend_alert(bg):
     print("Upward Trend Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Blood sugar going up', f'Currently, your blood sugar is {int(bg)}.')
 
-async def trigger_downward_trend_alert():
+async def trigger_downward_trend_alert(bg):
     print("Downward Trend Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Blood sugar going down', f'Currently, your blood sugar is {int(bg)}.')
 
-async def trigger_time_in_range_alert():
+async def trigger_time_in_range_alert(bg):
     print("Time-in-Range Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Blood sugar has been out of range', f'Currently, your blood sugar is {int(bg)}.')
 
-async def trigger_post_meal_alert():
+async def trigger_post_meal_alert(bg):
     print("Post-Meal Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)

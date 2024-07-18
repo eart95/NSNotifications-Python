@@ -111,10 +111,12 @@ async def send_push_notification(device_token, title, body):
         'content-type': 'application/json'
     }
 
+    '''
     print(f'secret: {secret}')
     print(f'headers: {headers}')
     print(f'payload: {payload}')
     print(f'url: {url}')
+    '''
 
     async with httpx.AsyncClient(http2=True) as client:
         response = await client.post(url, headers=headers, json=notification)
@@ -260,8 +262,8 @@ async def trigger_extreme_low_bg_alert():
 async def trigger_high_bg_alert():
     print("High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
-        print(device_token)
-        await send_push_notification(device_token, 'High blood sugar', 'Your blood sugar is {current_bg}')
+        #print(device_token)
+        await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {current_bg}')
 
 async def trigger_low_bg_alert():
     print("Low BG Alert Triggered")

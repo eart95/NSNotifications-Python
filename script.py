@@ -307,6 +307,8 @@ async def main():
     # Determine the highest priority alert that should be triggered
     highest_priority = float('inf')
     alert_to_trigger = None
+    alert_args = None
+    alert_kwargs = None
 
     def should_trigger_alert(alert_name, priority, condition, *args, **kwargs):
         nonlocal highest_priority, alert_to_trigger, alert_args, alert_kwargs

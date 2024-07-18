@@ -7,6 +7,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 from requests.auth import HTTPBasicAuth
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+import ssl
+import http.client
 #import datetime
 
 # Constants

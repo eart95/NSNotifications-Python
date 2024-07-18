@@ -10,7 +10,7 @@ from requests.auth import HTTPBasicAuth
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 import ssl
-import http.client
+import httpx
 #import datetime
 
 # Constants
@@ -77,7 +77,45 @@ def read_p8_file():
 
 def send_push_notification(token, title, body):
     secret = read_p8_file()
+
+    headers = {
+        'alg': 'ES256',
+        'kid': APNS_KEY_ID,
+    }
+
+    payload = {
+        'iss': APNS_TEAM_ID,
+        'iat': time.time()
+    }
+
+    private_key = serialization.load_pem_private_key(secret.encode(), password=None, backend=default_backend())
+    token = jwt.encode(payload, private_key, algorithm='ES256', headers=headers)
+
+    notification = {
+        'aps': {
+            'alert': {
+                'title': title,
+                'body': body
+            },
+            'sound': 'default'
+        },
+        'interruption-level': 'time-sensitive'
+    }
+
+    url = f'https://api.push.apple.com/3/device/{token}'
+
+    headers = {
+        'apns-topic': APNS_BUNDLE_ID,
+        'authorization': f'bearer {token}',
+        'content-type': 'application/json'
+    }
+
+    async with httpx.AsyncClient(http2=True) as client:
+        response = await client.post(url, headers=headers, json=notification)
+
+    print(response.status_code, response.text)
     
+    '''
     headers = {
         'alg': 'ES256',
         'kid': APNS_KEY_ID,
@@ -117,6 +155,8 @@ def send_push_notification(token, title, body):
     
     response = conn.getresponse()
     print(response.status, response.reason)
+
+'''
     
 
 def save_data(data):

@@ -323,11 +323,15 @@ async def main():
                         if priority < highest_priority:
                             highest_priority = priority
                             alert_to_trigger = alert_name
+                            alert_args = args
+                            alert_kwargs = kwargs
                 return
         if condition:
             if priority < highest_priority:
                 highest_priority = priority
-                alert_to_trigger = (alert_name, args, kwargs)
+                alert_to_trigger = alert_name
+                alert_args = args
+                alert_kwargs = kwargs
 
     should_trigger_alert("extreme_high_bg", 1, current_bg > hysteresis_extreme_high)
     should_trigger_alert("extreme_low_bg", 1, current_bg < hysteresis_extreme_low)
@@ -371,9 +375,9 @@ async def main():
 
     # Trigger the highest priority alert
     if alert_to_trigger:
-        alert_name, args, kwargs = alert_to_trigger
+        #alert_name, args, kwargs = alert_to_trigger
         trigger_function = globals()[f'trigger_{alert_to_trigger}_alert']
-        await trigger_function(*args, **kwargs)
+        await trigger_function(*alert_args, **alert_kwargs)
         #data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
         data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority

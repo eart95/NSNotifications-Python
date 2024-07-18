@@ -259,11 +259,11 @@ async def trigger_extreme_high_bg_alert():
 async def trigger_extreme_low_bg_alert():
     print("Extreme Low BG Alert Triggered")
 
-async def trigger_high_bg_alert():
+async def trigger_high_bg_alert(bg):
     print("High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {current_bg}')
+        await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {bg}')
 
 async def trigger_low_bg_alert():
     print("Low BG Alert Triggered")
@@ -308,7 +308,7 @@ async def main():
     highest_priority = float('inf')
     alert_to_trigger = None
 
-    def should_trigger_alert(alert_name, priority, condition):
+    def should_trigger_alert(alert_name, priority, condition, *args, **kwargs):
         nonlocal highest_priority, alert_to_trigger
         #last_alert_time = data.get(alert_name, {}).get('last_alert_time')
         last_alert_time = data.get('last_alert_time')
@@ -327,11 +327,11 @@ async def main():
         if condition:
             if priority < highest_priority:
                 highest_priority = priority
-                alert_to_trigger = alert_name
+                alert_to_trigger = (alert_name, args, kwargs)
 
     should_trigger_alert("extreme_high_bg", 1, current_bg > hysteresis_extreme_high)
     should_trigger_alert("extreme_low_bg", 1, current_bg < hysteresis_extreme_low)
-    should_trigger_alert("high_bg", 2, current_bg > hysteresis_high)
+    should_trigger_alert("high_bg", 2, current_bg > hysteresis_high, current_bg)
     should_trigger_alert("low_bg", 2, current_bg < hysteresis_low)
     
     # Rapid Rise/Fall
@@ -371,8 +371,9 @@ async def main():
 
     # Trigger the highest priority alert
     if alert_to_trigger:
+        alert_name, args, kwargs = alert_to_trigger
         trigger_function = globals()[f'trigger_{alert_to_trigger}_alert']
-        await trigger_function()
+        await trigger_function(*args, **kwargs)
         #data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
         data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority

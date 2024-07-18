@@ -2,4 +2,4 @@ requests
 pyjwt
 pandas
 cryptography
-httpx
+httpx[http2]

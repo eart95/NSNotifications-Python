@@ -309,7 +309,7 @@ async def main():
     alert_to_trigger = None
 
     def should_trigger_alert(alert_name, priority, condition, *args, **kwargs):
-        nonlocal highest_priority, alert_to_trigger
+        nonlocal highest_priority, alert_to_trigger, alert_args, alert_kwargs
         #last_alert_time = data.get(alert_name, {}).get('last_alert_time')
         last_alert_time = data.get('last_alert_time')
         cool_down_period = COOL_DOWN_PERIODS[alert_name]

@@ -103,7 +103,7 @@ async def send_push_notification(token, title, body):
         'interruption-level': 'time-sensitive'
     }
 
-    url = f'https://api.push.apple.com/3/device/{token}'
+    url = f'https://api.sandbox.push.apple.com/3/device/{token}'
 
     headers = {
         'apns-topic': APNS_BUNDLE_ID,

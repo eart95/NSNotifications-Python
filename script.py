@@ -17,7 +17,7 @@ import asyncio
 # Constants
 EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
-HIGH_BG_THRESHOLD = 90          # mg/dL --to 180
+HIGH_BG_THRESHOLD = 180          # mg/dL --to 180
 LOW_BG_THRESHOLD = 70            # mg/dL
 RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
 TREND_PERIOD = 60                # minutes
@@ -54,11 +54,11 @@ DEVICE_TOKENS = read_tokens()
 
 COOL_DOWN_PERIODS = {
     "extreme_high_bg": 30,  # minutes
-    "extreme_low_bg": 30,   # minutes
-    "high_bg": 1,          # minutes --should be 60
-    "low_bg": 60,           # minutes
+    "extreme_low_bg": 2,   # minutes
+    "high_bg": 30,          # minutes --should be 60
+    "low_bg": 5,           # minutes
     "rapid_rise": 15,       # minutes
-    "rapid_fall": 15,       # minutes
+    "rapid_fall": 5,       # minutes
     "upward_trend": 30,     # minutes
     "downward_trend": 30,   # minutes
     "time_in_range": 120,   # minutes
@@ -255,36 +255,63 @@ def getCurrentTime():
 # Alert Functions
 async def trigger_extreme_high_bg_alert():
     print("Extreme High BG Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Very high blood sugar', f'Your blood sugar is {int(bg)}.')
 
 async def trigger_extreme_low_bg_alert():
     print("Extreme Low BG Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'VERY LOW blood sugar', f'Your blood sugar is {int(bg)}.')
 
 async def trigger_high_bg_alert(bg):
     print("High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {bg}')
+        await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {int(bg)}.')
 
 async def trigger_low_bg_alert():
     print("Low BG Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Low blood sugar', f'Your blood sugar is {int(bg)}.')
 
 async def trigger_rapid_rise_alert():
     print("Rapid Rise Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)}.')
 
 async def trigger_rapid_fall_alert():
     print("Rapid Fall Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)}.')
 
 async def trigger_upward_trend_alert():
     print("Upward Trend Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Blood sugar going up', f'Currently, your blood sugar is {int(bg)}.')
 
 async def trigger_downward_trend_alert():
     print("Downward Trend Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Blood sugar going down', f'Currently, your blood sugar is {int(bg)}.')
 
 async def trigger_time_in_range_alert():
     print("Time-in-Range Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Blood sugar has been out of range', f'Currently, your blood sugar is {int(bg)}.')
 
 async def trigger_post_meal_alert():
     print("Post-Meal Alert Triggered")
+    for device_token in DEVICE_TOKENS:
+        #print(device_token)
+        await send_push_notification(device_token, 'Check your blood sugar after your meal', f'Currently, your blood sugar is {int(bg)}.')
 
 # Main Logic
 async def main():
@@ -383,7 +410,7 @@ async def main():
         #data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
         data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority
-        print(data)
+        #print(data)
         save_data(data)
 
 if __name__ == '__main__':

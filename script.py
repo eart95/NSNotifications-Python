@@ -75,7 +75,7 @@ def read_p8_file():
         return None
 
 
-def send_push_notification(token, title, body):
+async def send_push_notification(token, title, body):
     secret = read_p8_file()
 
     headers = {
@@ -245,40 +245,40 @@ def getCurrentTime():
     return datetime.now()
 
 # Alert Functions
-def trigger_extreme_high_bg_alert():
+async def trigger_extreme_high_bg_alert():
     print("Extreme High BG Alert Triggered")
 
-def trigger_extreme_low_bg_alert():
+async def trigger_extreme_low_bg_alert():
     print("Extreme Low BG Alert Triggered")
 
-def trigger_high_bg_alert():
+async def trigger_high_bg_alert():
     print("High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
-        send_push_notification(device_token, 'High blood sugar', 'Your blood sugar is {current_bg}')
+        await send_push_notification(device_token, 'High blood sugar', 'Your blood sugar is {current_bg}')
 
-def trigger_low_bg_alert():
+async def trigger_low_bg_alert():
     print("Low BG Alert Triggered")
 
-def trigger_rapid_rise_alert():
+async def trigger_rapid_rise_alert():
     print("Rapid Rise Alert Triggered")
 
-def trigger_rapid_fall_alert():
+async def trigger_rapid_fall_alert():
     print("Rapid Fall Alert Triggered")
 
-def trigger_upward_trend_alert():
+async def trigger_upward_trend_alert():
     print("Upward Trend Alert Triggered")
 
-def trigger_downward_trend_alert():
+async def trigger_downward_trend_alert():
     print("Downward Trend Alert Triggered")
 
-def trigger_time_in_range_alert():
+async def trigger_time_in_range_alert():
     print("Time-in-Range Alert Triggered")
 
-def trigger_post_meal_alert():
+async def trigger_post_meal_alert():
     print("Post-Meal Alert Triggered")
 
 # Main Logic
-def main():
+async def main():
     current_time = getCurrentTime()
     data = read_data()
 
@@ -363,7 +363,7 @@ def main():
     # Trigger the highest priority alert
     if alert_to_trigger:
         trigger_function = globals()[f'trigger_{alert_to_trigger}_alert']
-        trigger_function()
+        await trigger_function()
         #data[alert_to_trigger] = {'last_alert_time': current_time.isoformat()}
         data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority
@@ -371,4 +371,4 @@ def main():
         save_data(data)
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

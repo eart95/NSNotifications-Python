@@ -55,7 +55,7 @@ DEVICE_TOKENS = read_tokens()
 COOL_DOWN_PERIODS = {
     "extreme_high_bg": 30,  # minutes
     "extreme_low_bg": 30,   # minutes
-    "high_bg": 60,          # minutes
+    "high_bg": 1,          # minutes --should be 60
     "low_bg": 60,           # minutes
     "rapid_rise": 15,       # minutes
     "rapid_fall": 15,       # minutes

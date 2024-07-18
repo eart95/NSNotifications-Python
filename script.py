@@ -86,7 +86,7 @@ async def send_push_notification(token, title, body):
 
     payload = {
         'iss': APNS_TEAM_ID,
-        'iat': time.time()
+        'iat': int(time.time())
     }
 
     private_key = serialization.load_pem_private_key(secret.encode(), password=None, backend=default_backend())

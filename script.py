@@ -111,9 +111,9 @@ async def send_push_notification(token, title, body):
         'content-type': 'application/json'
     }
 
-    print('headers: {headers}')
-    print('payload: {payload}')
-    print('url: {url}')
+    print(f'headers: {headers}')
+    print(f'payload: {payload}')
+    print(f'url: {url}')
 
     async with httpx.AsyncClient(http2=True) as client:
         response = await client.post(url, headers=headers, json=notification)

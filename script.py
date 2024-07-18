@@ -5,13 +5,14 @@ import jwt
 import pandas as pd
 #import numpy as np
 from datetime import datetime, timedelta
+import time
 from requests.auth import HTTPBasicAuth
 #import datetime
 
 # Constants
 EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
-HIGH_BG_THRESHOLD = 180          # mg/dL --to 180
+HIGH_BG_THRESHOLD = 90          # mg/dL --to 180
 LOW_BG_THRESHOLD = 70            # mg/dL
 RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
 TREND_PERIOD = 60                # minutes
@@ -80,7 +81,7 @@ def send_push_notification(token, title, body):
 
     payload = {
         'iss': APNS_TEAM_ID,
-        'iat': datetime.time()
+        'iat': time.time()
     }
 
     token = jwt.encode(payload, secret, algorithm='ES256', headers=headers)

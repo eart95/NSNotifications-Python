@@ -76,7 +76,7 @@ def read_p8_file():
         return None
 
 
-async def send_push_notification(token, title, body):
+async def send_push_notification(device_token, title, body):
     secret = read_p8_file()
 
     headers = {
@@ -103,7 +103,7 @@ async def send_push_notification(token, title, body):
         'interruption-level': 'time-sensitive'
     }
 
-    url = f'https://api.sandbox.push.apple.com/3/device/{token}'
+    url = f'https://api.sandbox.push.apple.com/3/device/{device_token}'
 
     headers = {
         'apns-topic': APNS_BUNDLE_ID,
@@ -111,6 +111,7 @@ async def send_push_notification(token, title, body):
         'content-type': 'application/json'
     }
 
+    print(f'secret: {secret}')
     print(f'headers: {headers}')
     print(f'payload: {payload}')
     print(f'url: {url}')

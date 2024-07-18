@@ -109,7 +109,7 @@ def send_push_notification(token, title, body):
         f'/3/device/{token}',
         body=json.dumps(notification),
         headers={
-            'apns-topic': bundle_id,
+            'apns-topic': APNS_BUNDLE_ID,
             'authorization': f'bearer {token}',
             'content-type': 'application/json'
         }

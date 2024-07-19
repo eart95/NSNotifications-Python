@@ -362,23 +362,23 @@ async def main():
                 alert_args = args
                 alert_kwargs = kwargs
 
-    should_trigger_alert("extreme_high_bg", 1, current_bg > hysteresis_extreme_high)
-    should_trigger_alert("extreme_low_bg", 1, current_bg < hysteresis_extreme_low)
+    should_trigger_alert("extreme_high_bg", 1, current_bg > hysteresis_extreme_high, current_bg)
+    should_trigger_alert("extreme_low_bg", 1, current_bg < hysteresis_extreme_low, current_bg)
     should_trigger_alert("high_bg", 2, current_bg > hysteresis_high, current_bg)
-    should_trigger_alert("low_bg", 2, current_bg < hysteresis_low)
+    should_trigger_alert("low_bg", 2, current_bg < hysteresis_low, current_bg)
     
     # Rapid Rise/Fall
     bg_5_minutes_ago = getBGinTime(5, df)
     rate_of_rise = (current_bg - bg_5_minutes_ago) / 5
     rate_of_fall = (bg_5_minutes_ago - current_bg) / 5
-    should_trigger_alert("rapid_rise", 3, rate_of_rise > RAPID_CHANGE_THRESHOLD)
-    should_trigger_alert("rapid_fall", 3, rate_of_fall > RAPID_CHANGE_THRESHOLD)
+    should_trigger_alert("rapid_rise", 3, rate_of_rise > RAPID_CHANGE_THRESHOLD, current_bg)
+    should_trigger_alert("rapid_fall", 3, rate_of_fall > RAPID_CHANGE_THRESHOLD, current_bg)
 
     # Upward/Downward Trend
     bg_60_minutes_ago = getBGinTime(TREND_PERIOD, df)
     trend = (current_bg - bg_60_minutes_ago) / TREND_PERIOD
-    should_trigger_alert("upward_trend", 4, trend > UPWARD_TREND_THRESHOLD)
-    should_trigger_alert("downward_trend", 4, trend < DOWNWARD_TREND_THRESHOLD)
+    should_trigger_alert("upward_trend", 4, trend > UPWARD_TREND_THRESHOLD, current_bg)
+    should_trigger_alert("downward_trend", 4, trend < DOWNWARD_TREND_THRESHOLD, current_bg)
 
     # Time-in-Range
     out_of_range_duration = data.get('out_of_range_duration', 0)
@@ -392,7 +392,7 @@ async def main():
     else:
         data['last_out_of_range_time'] = current_time.isoformat()
     
-    should_trigger_alert("time_in_range", 5, out_of_range_duration > COOL_DOWN_PERIODS["time_in_range"])
+    should_trigger_alert("time_in_range", 5, out_of_range_duration > COOL_DOWN_PERIODS["time_in_range"], current_bg)
 
     # Post-Meal
     meal_time = data.get('last_meal_time')
@@ -400,7 +400,7 @@ async def main():
         meal_time = datetime.fromisoformat(meal_time)
         if current_time - meal_time >= timedelta(minutes=POST_MEAL_PERIOD):
             bg_change = current_bg - getBGinTime(POST_MEAL_PERIOD, df)
-            should_trigger_alert("post_meal", 6, abs(bg_change) > POST_MEAL_THRESHOLD)
+            should_trigger_alert("post_meal", 6, abs(bg_change) > POST_MEAL_THRESHOLD, current_bg)
 
     # Trigger the highest priority alert
     if alert_to_trigger:

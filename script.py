@@ -416,7 +416,11 @@ async def main():
         data['last_alert_time'] = current_time.isoformat()
         data['last_alert_priority'] = highest_priority
         #print(data)
-        save_data(data)
+    else:
+        data['last_alert_time'] = data.get('last_alert_time', current_time.isoformat())
+        data['last_alert_priority'] = data.get('last_alert_priority', 100)
+
+    save_data(data)
 
 if __name__ == '__main__':
     asyncio.run(main())

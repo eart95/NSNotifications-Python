@@ -275,7 +275,7 @@ async def trigger_low_bg_alert(bg):
     print("Low BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Low blood sugar', f'\u1F534 Your blood sugar is {int(bg)} mg/dL.')
+        await send_push_notification(device_token, 'Low blood sugar', f'🔴 Your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_rapid_rise_alert(bg):
     print("Rapid Rise Alert Triggered")
@@ -424,6 +424,7 @@ async def main():
         data['last_alert_priority'] = data.get('last_alert_priority', 100)
 
     save_data(data)
+    trigger_low_bg_alert(30)
 
 if __name__ == '__main__':
     asyncio.run(main())

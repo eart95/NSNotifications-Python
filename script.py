@@ -257,61 +257,63 @@ async def trigger_extreme_high_bg_alert(bg):
     print("Extreme High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Very high blood sugar', f'Your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F534 Very high blood sugar', f'Your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_extreme_low_bg_alert(bg):
     print("Extreme Low BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'VERY LOW blood sugar', f'Your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F198 VERY LOW blood sugar', f'Your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_high_bg_alert(bg):
     print("High BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'High blood sugar', f'Your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F7E1 High blood sugar', f'Your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_low_bg_alert(bg):
     print("Low BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Low blood sugar', f'Your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F534 Low blood sugar', f'Your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_rapid_rise_alert(bg):
     print("Rapid Rise Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F53C Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_rapid_fall_alert(bg):
     print("Rapid Fall Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F53D Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_upward_trend_alert(bg):
     print("Upward Trend Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Blood sugar going up', f'Currently, your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u2197 Blood sugar going up', f'Currently, your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_downward_trend_alert(bg):
     print("Downward Trend Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Blood sugar going down', f'Currently, your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u2198 Blood sugar going down', f'Currently, your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_time_in_range_alert(bg):
     print("Time-in-Range Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Blood sugar has been out of range', f'Currently, your blood sugar is {int(bg)}.')
+        await send_push_notification(device_token, '\u1F7E0 Blood sugar has been out of range', f'Currently, your blood sugar is {int(bg)} mg/dL.')
 
+'''
 async def trigger_post_meal_alert(bg):
     print("Post-Meal Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
         await send_push_notification(device_token, 'Check your blood sugar after your meal', f'Currently, your blood sugar is {int(bg)}.')
+'''
 
 # Main Logic
 async def main():
@@ -390,17 +392,20 @@ async def main():
         data['out_of_range_duration'] = out_of_range_duration
         data['last_out_of_range_time'] = current_time.isoformat()
     else:
-        data['last_out_of_range_time'] = current_time.isoformat()
+        data['out_of_range_duration'] = 0
+        data['last_out_of_range_time'] = None
     
     should_trigger_alert("time_in_range", 5, out_of_range_duration > COOL_DOWN_PERIODS["time_in_range"], current_bg)
 
     # Post-Meal
+    '''
     meal_time = data.get('last_meal_time')
     if meal_time:
         meal_time = datetime.fromisoformat(meal_time)
         if current_time - meal_time >= timedelta(minutes=POST_MEAL_PERIOD):
             bg_change = current_bg - getBGinTime(POST_MEAL_PERIOD, df)
             should_trigger_alert("post_meal", 6, abs(bg_change) > POST_MEAL_THRESHOLD, current_bg)
+    '''
 
     # Trigger the highest priority alert
     if alert_to_trigger:

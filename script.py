@@ -275,7 +275,7 @@ async def trigger_low_bg_alert(bg):
     print("Low BG Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, 'Low blood sugar', f'🔴 Your blood sugar is {int(bg)} mg/dL.')
+        await send_push_notification(device_token, '🔴 Low blood sugar', f'Your blood sugar is {int(bg)} mg/dL.')
 
 async def trigger_rapid_rise_alert(bg):
     print("Rapid Rise Alert Triggered")

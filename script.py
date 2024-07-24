@@ -19,7 +19,7 @@ EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
 HIGH_BG_THRESHOLD = 180          # mg/dL --to 180
 LOW_BG_THRESHOLD = 70            # mg/dL
-RAPID_CHANGE_THRESHOLD = 3       # mg/dL per minute
+RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
 TREND_PERIOD = 60                # minutes
 UPWARD_TREND_THRESHOLD = 1       # mg/dL per minute
 DOWNWARD_TREND_THRESHOLD = -1    # mg/dL per minute
@@ -370,9 +370,9 @@ async def main():
     should_trigger_alert("low_bg", 2, current_bg < hysteresis_low, current_bg)
     
     # Rapid Rise/Fall
-    bg_10_minutes_ago = getBGinTime(10, df)
-    rate_of_rise = (current_bg - bg_10_minutes_ago) / 10
-    rate_of_fall = (bg_10_minutes_ago - current_bg) / 10
+    bg_5_minutes_ago = getBGinTime(5, df)
+    rate_of_rise = (current_bg - bg_5_minutes_ago) / 5
+    rate_of_fall = (bg_5_minutes_ago - current_bg) / 5
     should_trigger_alert("rapid_rise", 3, rate_of_rise > RAPID_CHANGE_THRESHOLD, current_bg)
     should_trigger_alert("rapid_fall", 3, rate_of_fall > RAPID_CHANGE_THRESHOLD, current_bg)
 

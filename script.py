@@ -424,7 +424,7 @@ async def main():
         data['last_alert_priority'] = data.get('last_alert_priority', 100)
 
     save_data(data)
-    trigger_low_bg_alert(30)
+    await trigger_low_bg_alert(30)
 
 if __name__ == '__main__':
     asyncio.run(main())

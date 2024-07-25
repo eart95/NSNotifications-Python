@@ -61,7 +61,7 @@ COOL_DOWN_PERIODS = {
     "rapid_fall": 5,       # minutes
     "upward_trend": 30,     # minutes
     "downward_trend": 30,   # minutes
-    "time_in_range": 120,   # minutes
+    "time_in_range": 45,   # minutes
     "post_meal": 120        # minutes
 }
 
@@ -277,17 +277,17 @@ async def trigger_low_bg_alert(bg):
         #print(device_token)
         await send_push_notification(device_token, '🔴 Low blood sugar', f'Your blood sugar is {int(bg)} mg/dL.')
 
-async def trigger_rapid_rise_alert(bg):
+async def trigger_rapid_rise_alert(bg, rise):
     print("Rapid Rise Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, '🔼 Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL.')
+        await send_push_notification(device_token, '🔼 Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL. It has been rising by {rise} mg/dL / min in the last 5 minutes.')
 
-async def trigger_rapid_fall_alert(bg):
+async def trigger_rapid_fall_alert(bg, fall):
     print("Rapid Fall Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, '🔽 Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL.')
+        await send_push_notification(device_token, '🔽 Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL. It has been falling by {fall} mg/dL / min in the last 5 minutes.')
 
 async def trigger_upward_trend_alert(bg):
     print("Upward Trend Alert Triggered")
@@ -373,8 +373,8 @@ async def main():
     bg_5_minutes_ago = getBGinTime(5, df)
     rate_of_rise = (current_bg - bg_5_minutes_ago) / 5
     rate_of_fall = (bg_5_minutes_ago - current_bg) / 5
-    should_trigger_alert("rapid_rise", 3, rate_of_rise > RAPID_CHANGE_THRESHOLD, current_bg)
-    should_trigger_alert("rapid_fall", 3, rate_of_fall > RAPID_CHANGE_THRESHOLD, current_bg)
+    should_trigger_alert("rapid_rise", 3, rate_of_rise > RAPID_CHANGE_THRESHOLD, current_bg, rate_of_rise)
+    should_trigger_alert("rapid_fall", 3, rate_of_fall > RAPID_CHANGE_THRESHOLD, current_bg, rate_of_fall)
 
     # Upward/Downward Trend
     bg_60_minutes_ago = getBGinTime(TREND_PERIOD, df)
@@ -398,7 +398,7 @@ async def main():
         data['out_of_range_duration'] = 0
         data['last_out_of_range_time'] = None
     
-    should_trigger_alert("time_in_range", 5, out_of_range_duration > COOL_DOWN_PERIODS["time_in_range"], current_bg)
+    should_trigger_alert("time_in_range", 5, out_of_range_duration > COOL_DOWN_PERIODS["time_in_range"] and out_of_range_duration > 30, current_bg)
 
     # Post-Meal
     '''
@@ -424,6 +424,7 @@ async def main():
         data['last_alert_priority'] = data.get('last_alert_priority', 100)
 
     save_data(data)
+    trigger_rapid_rise_alert(current_bg, rate_of_rise)
 
 if __name__ == '__main__':
     asyncio.run(main())

@@ -424,7 +424,6 @@ async def main():
         data['last_alert_priority'] = data.get('last_alert_priority', 100)
 
     save_data(data)
-    await trigger_upward_trend_alert(current_bg, abs(trend))
 
 if __name__ == '__main__':
     asyncio.run(main())

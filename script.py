@@ -384,11 +384,11 @@ async def main():
 
     # Time-in-Range
     out_of_range_duration = data.get('out_of_range_duration', 0)
-    last_out_of_range_time = data.get('last_out_of_range_time', current_time.isoformat())
+    last_out_of_range_time = data.get('last_out_of_range_time')
     if last_out_of_range_time:
         last_out_of_range_time = datetime.fromisoformat(last_out_of_range_time)
     else:
-        last_out_of_range_time = current_time.isoformat()
+        last_out_of_range_time = current_time
     
     if current_bg < TIME_IN_RANGE[0] or current_bg > TIME_IN_RANGE[1]:
         out_of_range_duration += (current_time - last_out_of_range_time).total_seconds() / 60

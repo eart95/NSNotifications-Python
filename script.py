@@ -281,25 +281,25 @@ async def trigger_rapid_rise_alert(bg, rise):
     print("Rapid Rise Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, '🔼 Blood sugar rising rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL. It has been rising by {rise} mg/dL / min in the last 5 minutes.')
+        await send_push_notification(device_token, '🔼 Blood sugar rising rapidly', f'Your blood sugar is {int(bg)} mg/dL. In the last five minutes, it has risen by {rise:.1f} mg/dL/min.')
 
 async def trigger_rapid_fall_alert(bg, fall):
     print("Rapid Fall Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, '🔽 Blood sugar falling rapidly', f'Currently, your blood sugar is {int(bg)} mg/dL. It has been falling by {fall} mg/dL / min in the last 5 minutes.')
+        await send_push_notification(device_token, '🔽 Blood sugar falling rapidly', f'Your blood sugar is {int(bg)} mg/dL. In the last five minutes, it has dropped by {fall:.1f} mg/dL/min.')
 
-async def trigger_upward_trend_alert(bg):
+async def trigger_upward_trend_alert(bg, change):
     print("Upward Trend Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, '↗️ Blood sugar going up', f'Currently, your blood sugar is {int(bg)} mg/dL.')
+        await send_push_notification(device_token, '↗️ Blood sugar going up', f'Your blood sugar is {int(bg)} mg/dL. In the last hour, it has risen by {change:.1f} mg/dL/min.')
 
-async def trigger_downward_trend_alert(bg):
+async def trigger_downward_trend_alert(bg, change):
     print("Downward Trend Alert Triggered")
     for device_token in DEVICE_TOKENS:
         #print(device_token)
-        await send_push_notification(device_token, '↘️ Blood sugar going down', f'Currently, your blood sugar is {int(bg)} mg/dL.')
+        await send_push_notification(device_token, '↘️ Blood sugar going down', f'Your blood sugar is {int(bg)} mg/dL. In the last hour, it has dropped by {change:.1f} mg/dL/min.')
 
 async def trigger_time_in_range_alert(bg):
     print("Time-in-Range Alert Triggered")
@@ -379,8 +379,8 @@ async def main():
     # Upward/Downward Trend
     bg_60_minutes_ago = getBGinTime(TREND_PERIOD, df)
     trend = (current_bg - bg_60_minutes_ago) / TREND_PERIOD
-    should_trigger_alert("upward_trend", 4, trend > UPWARD_TREND_THRESHOLD, current_bg)
-    should_trigger_alert("downward_trend", 4, trend < DOWNWARD_TREND_THRESHOLD, current_bg)
+    should_trigger_alert("upward_trend", 4, trend > UPWARD_TREND_THRESHOLD, current_bg, abs(trend))
+    should_trigger_alert("downward_trend", 4, trend < DOWNWARD_TREND_THRESHOLD, current_bg, abs(trend))
 
     # Time-in-Range
     out_of_range_duration = data.get('out_of_range_duration', 0)

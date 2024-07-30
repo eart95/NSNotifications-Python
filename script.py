@@ -19,8 +19,8 @@ EXTREME_HIGH_BG_THRESHOLD = 250  # mg/dL
 EXTREME_LOW_BG_THRESHOLD = 50    # mg/dL
 HIGH_BG_THRESHOLD = 180          # mg/dL --to 180
 LOW_BG_THRESHOLD = 70            # mg/dL
-RAPID_CHANGE_THRESHOLD = 2       # mg/dL per minute
-TREND_PERIOD = 60                # minutes
+RAPID_CHANGE_THRESHOLD = 3       # mg/dL per minute
+TREND_PERIOD = 30                # minutes
 UPWARD_TREND_THRESHOLD = 1       # mg/dL per minute
 DOWNWARD_TREND_THRESHOLD = -1    # mg/dL per minute
 TIME_IN_RANGE = (70, 180)        # mg/dL
@@ -58,7 +58,7 @@ COOL_DOWN_PERIODS = {
     "high_bg": 30,          # minutes --should be 60
     "low_bg": 5,           # minutes
     "rapid_rise": 15,       # minutes
-    "rapid_fall": 5,       # minutes
+    "rapid_fall": 10,       # minutes
     "upward_trend": 30,     # minutes
     "downward_trend": 30,   # minutes
     "time_in_range": 45,   # minutes

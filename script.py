@@ -98,9 +98,9 @@ async def send_push_notification(device_token, title, body):
                 'title': title,
                 'body': body
             },
-            'sound': 'default'
+            'sound': 'default',
+            'interruption-level': 'time-sensitive'
         },
-        'interruption-level': 'time-sensitive'
     }
 
     url = f'https://api.sandbox.push.apple.com/3/device/{device_token}'
@@ -182,13 +182,32 @@ def save_data(data):
 def read_data():
     # Read data from the JSON file on the server.
     response = requests.get(URL, auth=HTTPBasicAuth(USERNAME, PASSWORD))
-    if response.status_code == 200:
-        data = response.json()
-        return data
-    else:
-        print('Failed to read data:', response.status_code, response.text)
-        return None
+    try:
+        response.raise_for_status()
+    except requests.HTTPError:
+        print('Failed to read data:', response.status_code, response.text[:200])
+        return {}  # safe default
 
+    body = response.text.strip()
+    if not body:
+        # First run or empty file
+        return {}
+
+    # Prefer header detection, but fall back to lenient parse
+    ctype = response.headers.get("Content-Type", "")
+    if "application/json" in ctype.lower():
+        try:
+            return response.json()
+        except ValueError:
+            print("Invalid JSON despite JSON content-type. Body (first 200):", body[:200])
+            return {}
+    else:
+        # Might be JSON served as text/plain
+        try:
+            return json.loads(body)
+        except ValueError:
+            print("Non-JSON response. Body (first 200):", body[:200])
+            return {}
 
 
 

@@ -1,5 +1,9 @@
-requests
-pyjwt
-pandas
-cryptography
-httpx[http2]
+# Deliberately short. pandas and its 60 MB of transitive weight are gone: it
+# was used to resample glucose onto a one-minute grid and linearly interpolate
+# the gaps, which turned a sensor outage into a smooth and entirely fictional
+# line that the alert rules then ran against.
+httpx[http2]>=0.27
+pyjwt>=2.8
+cryptography>=42.0
+fastapi>=0.110
+uvicorn[standard]>=0.29

@@ -67,7 +67,7 @@ a day.
 | `DATABASE_PATH` | **new** | Defaults to `/data/nsnotifier.sqlite3`. **Must be on a persistent volume** — see §5. |
 | `PERSISTENT_STORAGE_URL`, `PERSISTENT_STORAGE_USERNAME`, `PERSISTENT_STORAGE_PW` | **delete** | Replaced by SQLite. |
 | `DEVICE_TOKENS` | **delete** | Replaced by registration. |
-| `POLL_INTERVAL_SECONDS` | new, optional | Default 300. Only used by `serve`/`worker`. |
+| `POLL_INTERVAL_SECONDS` | new, optional | Default 120. Only used by `serve`/`worker`. Two minutes rather than five so a running Live Activity stays current. |
 | `REFRESH_PUSH_INTERVAL_SECONDS` | new, optional | Default 1800. How often, at most, to send a device a silent "go and sync" push. 0 disables. |
 | `HEARTBEAT_URL` | new, optional | Strongly recommended. See §6. |
 | `PORT` | new, optional | Default 8080. The registration API. |

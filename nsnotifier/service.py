@@ -374,7 +374,36 @@ class NotifierService:
         # push-to-start the phone has to come back with the new activity's own
         # token, and until it does there is nothing here to update — pushing to
         # the previous episode's token would update an activity that is gone.
-        if not device.activity_token or device.activity_episode_id != episode.identifier:
+        #
+        # A skip here is correct, and it is also the single most confusing thing
+        # this service does: from the outside it looks identical to a Lock
+        # Screen that has simply stopped working. So it says which half is
+        # missing, every time, rather than returning quietly.
+        if not device.activity_token:
+            logger.info(
+                "activity: no update for %s — the phone has not registered an activity token "
+                "(episode %s). Nothing to address.",
+                device.device_id,
+                episode.identifier,
+            )
+            await self._store.record_push(
+                device.device_id, "activity.update.skipped", 0, "no activityToken registered"
+            )
+            return False
+        if device.activity_episode_id != episode.identifier:
+            logger.info(
+                "activity: no update for %s — registered episode %s, current episode %s. "
+                "The phone is describing a different activity from the one this service is running.",
+                device.device_id,
+                device.activity_episode_id or "-",
+                episode.identifier,
+            )
+            await self._store.record_push(
+                device.device_id,
+                "activity.update.skipped",
+                0,
+                f"episode mismatch: registered {device.activity_episode_id or '-'}, current {episode.identifier}",
+            )
             return False
 
         state = self._build_state(episode, device, readings, prediction, cob, iob, now)

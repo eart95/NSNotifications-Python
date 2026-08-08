@@ -98,12 +98,21 @@ class Config:
     # finds the URL can enrol a device token or read one back.
     shared_secret: str
     database_path: Path
-    # Seconds between ticks in `serve`/`worker`. Nightscout's own cadence is
-    # five minutes; going faster mostly re-reads the same reading.
-    poll_interval: int = 300
+    # Seconds between ticks in `serve`/`worker`.
+    #
+    # Two minutes, not five. Nightscout's own cadence is five, so most ticks
+    # re-read the same reading — but a running Live Activity is refreshed on
+    # every tick, and at a five-minute cadence its face could be nearly five
+    # minutes behind before anything arrived to correct it. The extra reads are
+    # a few kilobytes; the difference on a Lock Screen during a hypo is the
+    # whole point of the feature.
+    #
+    # The app's `serverTakeoverAfter` is derived from this: it starts writing
+    # states itself after four missed ticks. Change one and change the other.
+    poll_interval: int = 120
     # Jitter, so a fleet of these does not stampede a Nightscout site on the
     # minute boundary.
-    poll_jitter: int = 20
+    poll_jitter: int = 10
     # How often, at most, to send a device a silent "go and sync" push. iOS
     # budgets background pushes per app per day and drops them silently once an
     # app spends too many, so this is rationed rather than sent every tick.
@@ -163,8 +172,8 @@ class Config:
             ),
             shared_secret=_require("RELAY_SHARED_SECRET"),
             database_path=Path(_optional("DATABASE_PATH", "/data/nsnotifier.sqlite3")),
-            poll_interval=_int("POLL_INTERVAL_SECONDS", 300),
-            poll_jitter=_int("POLL_JITTER_SECONDS", 20),
+            poll_interval=_int("POLL_INTERVAL_SECONDS", 120),
+            poll_jitter=_int("POLL_JITTER_SECONDS", 10),
             refresh_push_interval=_float("REFRESH_PUSH_INTERVAL_SECONDS", 1800.0),
             registration_ttl_hours=_float("REGISTRATION_TTL_HOURS", 72.0),
             heartbeat_url=_optional("HEARTBEAT_URL"),

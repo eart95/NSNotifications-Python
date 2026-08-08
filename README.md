@@ -21,7 +21,7 @@ needs Apple's Critical Alerts entitlement. Keep your CGM app's own alarms on.
 | | When | How |
 | --- | --- | --- |
 | **Alerts** | Low, high, predicted low, no data — four kinds, each damped for 30 minutes after it fires | Visible `time-sensitive` push |
-| **Live Activity** | A hypo (measured or forecast), or 30 g+ of carbohydrate in half an hour. Both clear when glucose is back in range | Push-to-start, then update, then end |
+| **Live Activity** | A hypo (measured or forecast), or 30 g+ of carbohydrate in half an hour. Both clear when glucose is back in range | Push-to-start, then an update every 2 minutes, then end |
 | **Silent refresh** | At most every 30 minutes | `content-available`, so the app syncs and re-arms its own local alerts |
 
 The rules live in `nsnotifier/episodes.py` and `nsnotifier/alerts.py`, both of
@@ -72,7 +72,7 @@ web-hosted `.p8` both have to go.
 | `APNS_AUTH_KEY_PATH` | | | Alternative, if secrets are mounted as files |
 | `RELAY_SHARED_SECRET` | ✔ | | Bearer token the app presents; also goes in the app |
 | `DATABASE_PATH` | | `/data/nsnotifier.sqlite3` | **Put it on a volume** |
-| `POLL_INTERVAL_SECONDS` | | `300` | `serve`/`worker` only |
+| `POLL_INTERVAL_SECONDS` | | `120` | `serve`/`worker` only. Two minutes, so a running Live Activity is never far behind |
 | `REFRESH_PUSH_INTERVAL_SECONDS` | | `1800` | `0` disables silent pushes |
 | `REGISTRATION_TTL_HOURS` | | `72` | Devices quieter than this stop being pushed to |
 | `HEARTBEAT_URL` | | | Dead-man's switch. Strongly recommended |
@@ -138,3 +138,14 @@ nsnotifier/
   silently — the activity simply never updates again.
 * **Sequence numbers only ever increase.** APNs promises no ordering, and the
   phone drops any state not ahead of what it already shows.
+* **A two-minute update cadence needs the app's consent.** iOS budgets Live
+  Activity pushes and drops them silently past it unless the app declares
+  `NSSupportsLiveActivitiesFrequentUpdates`. Gloo does; anything else consuming
+  this service would have to.
+* **An update is only sent to a token the phone has vouched for.** The service
+  pushes when `activityToken` is present *and* `activityEpisodeID` matches the
+  episode it believes is running, and skips otherwise. That is deliberate — the
+  alternative is pushing to a token that may address an activity that ended —
+  but it means a phone that loses track of the pairing produces a frozen Lock
+  Screen and a *correctly* skipped push. `GlucoseActivityRegistrar.swift` in the
+  app is what keeps that pair current.

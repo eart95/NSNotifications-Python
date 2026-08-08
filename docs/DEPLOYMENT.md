@@ -20,7 +20,10 @@ the real problems are more specific:
    the next one anyway. With state in a fetch-modify-upload JSON file, two
    overlapping runs silently lose one of their updates.
 4. **Five minutes is a floor.** Nothing can react faster than the next tick,
-   and most cron implementations do not go below one minute anyway.
+   and most cron implementations do not go below one minute anyway. The service
+   now ticks every **two** minutes by default, so a running Live Activity is
+   never more than that behind; a five-minute cron cannot do that, and a
+   two-minute one would be paying its cold start 720 times a day.
 5. **Nothing can call you.** A cron job cannot serve the device-registration
    endpoint the app now needs. Something has to be listening.
 
@@ -145,8 +148,8 @@ HEARTBEAT_URL=https://hc-ping.com/your-uuid
 ```
 
 The service pings it after every **successful** tick — not on a failed one, so a
-Nightscout outage shows up too. Configure the check to expect a ping every 5
-minutes with a 15-minute grace, and to alert you by a channel that is not this
+Nightscout outage shows up too. Configure the check to expect a ping every 2
+minutes with a 10-minute grace, and to alert you by a channel that is not this
 system.
 
 This is the most important line in this document. Everything else here fails

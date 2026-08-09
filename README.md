@@ -148,4 +148,16 @@ nsnotifier/
   alternative is pushing to a token that may address an activity that ended —
   but it means a phone that loses track of the pairing produces a frozen Lock
   Screen and a *correctly* skipped push. `GlucoseActivityRegistrar.swift` in the
-  app is what keeps that pair current.
+  app is what keeps that pair current, and every skip here says which half was
+  missing.
+* **A 200 to a start push is not a Live Activity.** Apple accepted the push; the
+  phone still has to create the activity and come back with its token. When it
+  does not, the episode would otherwise spend its whole life on the update path
+  skipping every push for a card that does not exist — so a start is retried up
+  to four times, eight minutes apart, before the episode carries on as
+  alert-only.
+* **This service is the sole owner of Live Activities.** The app does not start,
+  end or replace them; it discovers what the service started and reports the
+  token that addresses it. Two systems minting episode identities for the same
+  hypo is what froze Lock Screens before, because neither could push to the
+  other's activity.

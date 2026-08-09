@@ -49,6 +49,19 @@ ACTIVITY_STALE_WINDOW = 20 * 60
 # range" is actually read.
 ACTIVITY_DISMISS_AFTER = 120
 
+# An episode can be running with no activity on the phone to show it: the
+# push-to-start token had not arrived when it began, the start push failed, or
+# the phone came back with nothing. Those are all recoverable, so a start is
+# retried rather than the episode spending its whole life on the update path
+# skipping every push.
+#
+# Bounded, though. A phone with Live Activities switched off at the OS level
+# accepts a start push and does nothing with it, and there is no way to tell
+# that apart from a phone that is merely slow — so after a few attempts the
+# episode gives up and carries on as an alert-only episode.
+ACTIVITY_START_RETRY_AFTER = 8 * 60
+ACTIVITY_START_MAX_ATTEMPTS = 4
+
 
 @dataclass
 class TickResult:
@@ -207,6 +220,7 @@ class NotifierService:
                 cob=cob,
                 iob=iob,
                 last_ended=last_ended,
+                device_state=state,
                 now=now,
                 result=result,
             )
@@ -268,6 +282,7 @@ class NotifierService:
         cob: Optional[float],
         iob: Optional[float],
         last_ended: dict[EpisodeKind, float],
+        device_state: dict[str, Any],
         now: float,
         result: TickResult,
     ) -> Optional[Episode]:
@@ -275,15 +290,29 @@ class NotifierService:
             return None
 
         if decision.action == "update":
-            episode = decision.episode.advanced()  # type: ignore[union-attr]
+            running = decision.episode  # type: ignore[union-attr]
+            # Before pushing an update, check there is anything to update. An
+            # episode whose activity was never started — no push-to-start token
+            # at the time, a start push that failed, a phone that never came
+            # back with a token — would otherwise spend its entire life here,
+            # skipping every push for a Lock Screen card that does not exist.
+            if self._should_retry_start(device, running, device_state, now):
+                started = await self._start_activity(
+                    running, device, readings, prediction, cob, iob, now, result, state=device_state
+                )
+                return started or running
+
+            episode = running.advanced()
             pushed = await self._update_activity(device, episode, readings, prediction, cob, iob, now, result)
             # A failed update leaves the sequence where it was, so the next
             # attempt does not skip a number the phone would then use as its
             # floor.
-            return episode if pushed else decision.episode
+            return episode if pushed else running
 
         if decision.action == "start":
-            return await self._start_activity(decision.episode, device, readings, prediction, cob, iob, now, result)  # type: ignore[arg-type]
+            return await self._start_activity(
+                decision.episode, device, readings, prediction, cob, iob, now, result, state=device_state  # type: ignore[arg-type]
+            )
 
         if decision.action == "end":
             await self._end_activity(
@@ -297,9 +326,42 @@ class NotifierService:
                 device, decision.episode, decision.reason or EndReason.SUPERSEDED, readings, prediction, cob, iob, now, result  # type: ignore[arg-type]
             )
             last_ended[decision.episode.kind] = now  # type: ignore[union-attr]
-            return await self._start_activity(decision.starting, device, readings, prediction, cob, iob, now, result)  # type: ignore[arg-type]
+            return await self._start_activity(
+                decision.starting, device, readings, prediction, cob, iob, now, result, state=device_state  # type: ignore[arg-type]
+            )
 
         return decision.live
+
+    # --- has this episode actually got an activity? -----------------------
+
+    @staticmethod
+    def _should_retry_start(
+        device: Device,
+        episode: Episode,
+        state: dict[str, Any],
+        now: float,
+    ) -> bool:
+        """Whether to (re)send a start push for an episode already under way.
+
+        Not the same question as "did the start push succeed". A 200 from APNs
+        means Apple accepted it, not that a Live Activity exists — the phone
+        still has to be running Live Activities, create it, and come back with
+        its token. The only evidence that actually counts is the phone
+        registering a token paired with *this* episode.
+        """
+        if not device.live_activities_enabled or not device.push_to_start_token:
+            return False
+        # The phone has vouched for this episode: there is something to update.
+        if device.activity_token and device.activity_episode_id == episode.identifier:
+            return False
+
+        ledger = state.get("activityStart") or {}
+        if ledger.get("episode") != episode.identifier:
+            # Never started for this episode at all.
+            return True
+        if int(ledger.get("attempts") or 0) >= ACTIVITY_START_MAX_ATTEMPTS:
+            return False
+        return (now - float(ledger.get("at") or 0)) >= ACTIVITY_START_RETRY_AFTER
 
     async def _start_activity(
         self,
@@ -311,6 +373,7 @@ class NotifierService:
         iob: Optional[float],
         now: float,
         result: TickResult,
+        state: Optional[dict[str, Any]] = None,
     ) -> Optional[Episode]:
         """Begin an activity on a phone that may not be running the app.
 
@@ -320,8 +383,32 @@ class NotifierService:
         only when the user next opens the app, which is to say afterwards.
         """
         if not device.push_to_start_token:
-            logger.info("start: %s has no push-to-start token yet", device.device_id)
+            logger.info(
+                "start: %s has no push-to-start token yet — nothing can put a Live Activity "
+                "on this phone until the app registers one",
+                device.device_id,
+            )
+            await self._store.record_push(
+                device.device_id, "activity.start.skipped", 0, "no pushToStartToken registered"
+            )
             return None
+
+        if state is not None:
+            ledger = state.get("activityStart") or {}
+            attempts = int(ledger.get("attempts") or 0) if ledger.get("episode") == episode.identifier else 0
+            state["activityStart"] = {
+                "episode": episode.identifier,
+                "at": now,
+                "attempts": attempts + 1,
+            }
+            if attempts:
+                logger.info(
+                    "start: retrying %s for %s (attempt %d) — the phone has not registered an "
+                    "activity token for it",
+                    episode.identifier,
+                    device.device_id,
+                    attempts + 1,
+                )
 
         episode = episode.advanced()
         state = self._build_state(episode, device, readings, prediction, cob, iob, now)

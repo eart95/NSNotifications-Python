@@ -36,6 +36,10 @@ def starts(apns) -> list[dict[str, Any]]:
     return [push for push in apns.activities if push["event"] == "start"]
 
 
+def updates(apns) -> list[dict[str, Any]]:
+    return [push for push in apns.activities if push["event"] == "update"]
+
+
 # --- the happy path --------------------------------------------------------
 
 
@@ -211,28 +215,131 @@ async def test_duration_defaults_and_clamps(tmp_path):
     assert short.body["durationSeconds"] == MANUAL_START_MIN_DURATION
 
 
-# --- and afterwards --------------------------------------------------------
+# --- the card's own life ---------------------------------------------------
 
 
-async def test_the_tick_is_not_confused_by_a_manual_activity(tmp_path):
-    # Nothing is persisted, so the automatic path carries on as if this had not
-    # happened — and when a real episode does start, the phone's registration
-    # still points at the manual one, which the existing mismatch recovery
-    # handles by sending its own start.
-    store, apns, service = await ready(tmp_path)
-    result = await service.request_start("device-1", now=ANCHOR)
-    manual_episode = result.body["episodeID"]
-
-    assert (await store.get_state("device-1")).get("episode") is None
-
+async def vouched(store, apns, service, at=ANCHOR):
+    """Start a manual card and have the phone register its token, as it would."""
+    result = await service.request_start("device-1", duration_seconds=7200, now=at)
     await store.upsert_device(
-        "device-1", registration(activityToken="token-activity", activityEpisodeID=manual_episode)
+        "device-1",
+        registration(activityToken="token-activity", activityEpisodeID=result.body["episodeID"]),
     )
     apns.activities.clear()
+    return result.body["episodeID"]
+
+
+async def test_the_episode_is_recorded_so_the_tick_can_keep_it(tmp_path):
+    store, apns, service = await ready(tmp_path)
+    result = await service.request_start("device-1", duration_seconds=7200, now=ANCHOR)
+
+    manual = (await store.get_state("device-1"))["manual"]
+    assert manual["episode"]["kind"] == "carbRise"
+    assert manual["expiresAt"] == ANCHOR + 7200
+    # Kept apart from the automatic episode, whose rules would end this one
+    # fifteen minutes in for the entirely correct reason that no meal is
+    # happening.
+    assert (await store.get_state("device-1")).get("episode") is None
+    assert result.body["expiresAt"] == ANCHOR + 7200
+
+
+async def test_the_tick_keeps_a_manual_card_current(tmp_path):
+    store, apns, service = await ready(tmp_path)
+    episode_id = await vouched(store, apns, service)
+
+    for offset in (120, 240, 360):
+        service._nightscout = FakeNightscout(series([118, 120, 123, 126], ending_at=ANCHOR + offset))
+        await service.tick(now=ANCHOR + offset)
+
+    sent = updates(apns)
+    assert len(sent) == 3
+    assert all(push["collapse_id"] == episode_id for push in sent)
+    # Fresh numbers each time, and a sequence the phone will accept.
+    sequences = [push["content_state"]["sequence"] for push in sent]
+    assert sequences == sorted(sequences) and len(set(sequences)) == 3
+    assert sent[-1]["content_state"]["mgdL"] == 126
+
+
+async def test_a_manual_card_ends_itself_when_the_time_is_up(tmp_path):
+    store, apns, service = await ready(tmp_path)
+    await vouched(store, apns, service)
+
+    await service.tick(now=ANCHOR + 3600)
+    assert [push["event"] for push in apns.activities] == ["update"]
+
+    apns.activities.clear()
+    await service.tick(now=ANCHOR + 7200 + 1)
+
+    ended = next(push for push in apns.activities if push["event"] == "end")
+    # Not the automatic "Still going", which describes an episode cut off at the
+    # ceiling while the situation continues. Nothing is still going here.
+    assert ended["content_state"]["headline"] == "Finished"
+    assert (await store.get_state("device-1")).get("manual") is None
+
+
+async def test_a_real_episode_takes_the_lock_screen_back(tmp_path):
+    # A card someone asked for must never be the reason a hypo warning has
+    # nowhere to go. Both halves happen in the same tick.
+    store, apns, service = await ready(tmp_path)
+    manual_episode = await vouched(store, apns, service)
+
     service._nightscout = FakeNightscout(series([110, 95, 80, 64], ending_at=ANCHOR + 300))
     await service.tick(now=ANCHOR + 300)
 
-    # A real hypo episode: its own start push, not an update aimed at the
-    # manual card.
-    assert [push["event"] for push in apns.activities] == ["start"]
+    assert [push["event"] for push in apns.activities] == ["end", "start"]
+    assert starts(apns)[0]["attributes"]["episodeKind"] == "hypoRisk"
     assert starts(apns)[0]["attributes"]["episodeID"] != manual_episode
+    assert (await store.get_state("device-1")).get("manual") is None
+
+
+async def test_a_manual_request_is_refused_while_a_real_episode_runs(tmp_path):
+    store, apns, service = await ready(tmp_path, readings=series([110, 95, 80, 64]))
+    await service.tick(now=ANCHOR)
+    apns.activities.clear()
+
+    result = await service.request_start("device-1", now=ANCHOR + 120)
+    assert result.status == 409
+    assert result.body["episodeKind"] == "hypoRisk"
+    # And it points at the thing that *is* the right tool at that moment.
+    assert "/test" in result.detail
+    assert apns.activities == []
+
+
+async def test_turning_live_activities_off_takes_a_manual_card_down_too(tmp_path):
+    store, apns, service = await ready(tmp_path)
+    await vouched(store, apns, service)
+
+    await store.upsert_device(
+        "device-1",
+        registration(
+            activityToken="token-activity", activityEpisodeID="x", liveActivitiesEnabled=False
+        ),
+    )
+    await service.tick(now=ANCHOR + 120)
+
+    assert (await store.get_state("device-1")).get("manual") is None
+
+
+async def test_a_manual_card_the_phone_never_registered_is_restarted(tmp_path):
+    # Same recovery as an automatic episode: a 200 to a start push is not a
+    # Live Activity, and the only evidence that one exists is the phone
+    # registering a token against this episode.
+    store, apns, service = await ready(tmp_path)
+    await service.request_start("device-1", duration_seconds=7200, now=ANCHOR)
+    apns.activities.clear()
+
+    await service.tick(now=ANCHOR + 120)
+    assert starts(apns) == []
+
+    await service.tick(now=ANCHOR + 10 * 60)
+    assert len(starts(apns)) == 1
+
+
+async def test_nothing_is_recorded_when_apns_refuses_the_start(tmp_path):
+    # An episode written before a refused push would leave the tick updating a
+    # card that does not exist.
+    store, apns, service = await ready(tmp_path)
+    apns.activity_result = PushResult(status=403, reason="ExpiredProviderToken")
+
+    await service.request_start("device-1", now=ANCHOR)
+    assert (await store.get_state("device-1")).get("manual") is None

@@ -21,7 +21,7 @@ needs Apple's Critical Alerts entitlement. Keep your CGM app's own alarms on.
 | | When | How |
 | --- | --- | --- |
 | **Alerts** | Low, high, predicted low, no data — four kinds, each damped for 30 minutes after it fires | Visible `time-sensitive` push |
-| **Live Activity** | A hypo (measured or forecast), or 30 g+ of carbohydrate in half an hour. Both clear when glucose is back in range | Push-to-start, then an update every 2 minutes, then end |
+| **Live Activity** | A hypo (measured or forecast), or 30 g+ of carbohydrate in half an hour. Both clear when glucose is back in range. Also on request, via `request-start` | Push-to-start, then an update every 2 minutes, then end |
 | **Silent refresh** | At most every 30 minutes | `content-available`, so the app syncs and re-arms its own local alerts |
 
 The rules live in `nsnotifier/episodes.py` and `nsnotifier/alerts.py`, both of
@@ -127,17 +127,28 @@ asks for. The kind is chosen from the newest reading: a hypo card during an
 actual hypo, otherwise the meal card, which is the one that does not claim an
 emergency.
 
-It is **stateless**: no episode is recorded, so the tick loop will not update or
-end this activity. It shows the numbers it was started with until its stale date
-and iOS removes it at the ceiling. That is the right shape for a manual trigger —
-an episode written here would be evaluated against real glucose on the next tick
-and, for a meal card with no carbohydrate behind it, ended fifteen minutes later.
+The card it starts is a real one: recorded as a manual episode, refreshed by
+every tick with current glucose exactly like an automatic one, and **ended on its
+own clock** when the duration runs out.
+
+It is kept apart from the automatic episode rather than written into the same
+slot, because the episode rules would end it almost at once — a meal card with no
+carbohydrate behind it is "settled" fifteen minutes in by every measure
+`episodes.evaluate` has, and it would be right. The card is not there because of
+a meal; it is there because someone asked.
+
+What it does not get is priority. The moment the rules say a real episode has
+begun, the manual card stands down and the real one takes the Lock Screen, in the
+same tick — a card someone asked for should never be the reason a hypo warning
+has nowhere to go. For the same reason a request is refused with `409` while a
+real episode is already running; `POST /test` is the right tool at that moment.
 
 | | |
 | --- | --- |
-| `200` | APNs accepted the push. Body carries `episodeID`, `episodeKind`, `durationSeconds`, `staleAt`, `apnsStatus` |
+| `200` | APNs accepted the push. Body carries `episodeID`, `episodeKind`, `durationSeconds`, `expiresAt`, `apnsStatus` |
 | `400` | No push-to-start token registered, Live Activities switched off in Gloo, or a `durationSeconds` that is not a positive number |
 | `404` | No such device |
+| `409` | A real episode is already running and owns the Lock Screen |
 | `502` | APNs refused it. Body carries `apnsStatus` and `apnsReason`; a 410 also drops the dead token |
 | `503` | Nightscout unreachable, or no recent reading to put on the card — deliberately not a 502, because that sends you somewhere else entirely |
 

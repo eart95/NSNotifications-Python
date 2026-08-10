@@ -173,6 +173,45 @@ class Episode:
 
 
 @dataclass(frozen=True)
+class ManualEpisode:
+    """An episode a person asked for, rather than one glucose implied.
+
+    It is an ordinary `Episode` with an expiry bolted on, and it is kept apart
+    from the automatic one in the device's state for a reason: the episode rules
+    would end it almost immediately. A meal card with no carbohydrate behind it
+    is "settled" fifteen minutes in by every measure `episodes.evaluate` has, and
+    it would be right — the card is not there because of a meal, it is there
+    because someone asked for it. So it lives its own life and ends on its own
+    clock.
+
+    What it does *not* get is priority. A real episode takes the Lock Screen
+    back the moment the rules say one has begun; a card someone asked for should
+    never be the reason a hypo warning has nowhere to go.
+    """
+
+    episode: Episode
+    expires_at: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"episode": self.episode.to_dict(), "expiresAt": self.expires_at}
+
+    @staticmethod
+    def from_dict(raw: Optional[dict[str, Any]]) -> Optional["ManualEpisode"]:
+        if not raw:
+            return None
+        episode = Episode.from_dict(raw.get("episode"))
+        if episode is None:
+            return None
+        try:
+            return ManualEpisode(episode=episode, expires_at=float(raw["expiresAt"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def with_episode(self, episode: Episode) -> "ManualEpisode":
+        return ManualEpisode(episode=episode, expires_at=self.expires_at)
+
+
+@dataclass(frozen=True)
 class EpisodeConfiguration:
     """Mirror of ``GlucoseEpisodeEvaluator.Configuration``.
 

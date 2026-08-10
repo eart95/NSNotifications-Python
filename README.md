@@ -105,6 +105,7 @@ answer, and what is actually unreliable about a cron job.
 | `PUT /v1/devices/{id}` | bearer | Register or update a device. Idempotent |
 | `DELETE /v1/devices/{id}` | bearer | Take a device off |
 | `POST /v1/tick` | bearer | Run one cycle now |
+| `POST /v1/devices/{id}/test` | bearer | Send a test alert now, and a test Live Activity update if one is running |
 | `GET /v1/diagnostics` | bearer | Registered devices and every push of the last seven days, with Apple's reason for each |
 
 ## Layout
@@ -150,6 +151,15 @@ nsnotifier/
   Screen and a *correctly* skipped push. `GlucoseActivityRegistrar.swift` in the
   app is what keeps that pair current, and every skip here says which half was
   missing.
+* **A 200 from APNs is not a delivery.** It means Apple accepted the push. The
+  payload can still be dropped on the device with no trace anywhere: at
+  `apns-priority: 5` the system is explicitly allowed to defer or discard Live
+  Activity updates, a content state over 4 KB is refused silently, and Low Power
+  Mode suspends them outright. Every Live Activity push here therefore goes at
+  priority 10, payload sizes are logged, and `POST /v1/devices/{id}/test` exists
+  so the question can be answered in five seconds rather than by waiting for a
+  hypo. The phone's own answer is in Settings → Notifications → "Last push
+  received".
 * **A 200 to a start push is not a Live Activity.** Apple accepted the push; the
   phone still has to create the activity and come back with its token. When it
   does not, the episode would otherwise spend its whole life on the update path

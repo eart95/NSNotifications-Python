@@ -25,6 +25,7 @@ notification. It is worth listing them, because they are the difference between
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -336,15 +337,40 @@ class APNsClient:
         if relevance_score is not None:
             aps["relevance-score"] = relevance_score
 
+        payload = {"aps": aps}
+        # Live Activity content states are capped at 4 KB by ActivityKit, and it
+        # enforces that *silently*: APNs returns 200, the phone drops the
+        # update, and the Lock Screen simply stops moving. Measuring it here is
+        # the only place the number is ever visible.
+        size = len(json.dumps(payload).encode())
+        if size > 3500:
+            logger.warning(
+                "apns: live activity %s payload is %d bytes, close to ActivityKit's 4096 ceiling",
+                event,
+                size,
+            )
+        logger.debug("apns: live activity %s, %d bytes, schema %s", event, size, content_state.get("schema"))
+
         return await self.send(
             token=token,
-            payload={"aps": aps},
+            payload=payload,
             push_type=PushType.LIVE_ACTIVITY,
             production=production,
             topic=self._config.live_activity_topic,
-            # 10 for anything the user should see now; 5 for routine refreshes,
-            # which APNs may then coalesce and deliver on its own schedule.
-            priority=10 if (alert or event != "update") else 5,
+            # Always 10.
+            #
+            # Priority 5 is documented as "the system may delay delivery, and
+            # may coalesce or drop updates to save power", and that is exactly
+            # what it does: APNs returns 200 and the update never reaches the
+            # phone, most reliably in Low Power Mode and once the day's budget
+            # is spent. That failure is indistinguishable from a broken service
+            # from every angle except a device console.
+            #
+            # An app declaring `NSSupportsLiveActivitiesFrequentUpdates` — Gloo
+            # does — is telling iOS these updates are worth the battery, and the
+            # only thing on this Lock Screen is a hypo or a meal in progress.
+            # Sending them at 5 was undoing that declaration.
+            priority=10,
             expiration=int(time.time()) + 30 * 60,
             collapse_id=collapse_id,
         )

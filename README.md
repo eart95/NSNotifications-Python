@@ -106,7 +106,40 @@ answer, and what is actually unreliable about a cron job.
 | `DELETE /v1/devices/{id}` | bearer | Take a device off |
 | `POST /v1/tick` | bearer | Run one cycle now |
 | `POST /v1/devices/{id}/test` | bearer | Send a test alert now, and a test Live Activity update if one is running |
+| `POST /v1/devices/{id}/request-start` | bearer | Start a Live Activity now, outside the episode rules |
 | `GET /v1/diagnostics` | bearer | Registered devices and every push of the last seven days, with Apple's reason for each |
+
+### `POST /v1/devices/{id}/request-start`
+
+```bash
+curl -X-POST -H "Authorization: Bearer $RELAY_SHARED_SECRET" \
+     -H 'Content-Type: application/json' -d '{"durationSeconds": 7200}' \
+     https://your-service/v1/devices/$DEVICE_ID/request-start
+```
+
+Everything else here starts a Live Activity because glucose said so. This starts
+one because a person asked — which is the only way to answer "does push-to-start
+reach this phone" without waiting for a hypo.
+
+`durationSeconds` is optional (default two hours) and clamped to between five
+minutes and eight hours, because iOS ends an activity at eight whatever anyone
+asks for. The kind is chosen from the newest reading: a hypo card during an
+actual hypo, otherwise the meal card, which is the one that does not claim an
+emergency.
+
+It is **stateless**: no episode is recorded, so the tick loop will not update or
+end this activity. It shows the numbers it was started with until its stale date
+and iOS removes it at the ceiling. That is the right shape for a manual trigger —
+an episode written here would be evaluated against real glucose on the next tick
+and, for a meal card with no carbohydrate behind it, ended fifteen minutes later.
+
+| | |
+| --- | --- |
+| `200` | APNs accepted the push. Body carries `episodeID`, `episodeKind`, `durationSeconds`, `staleAt`, `apnsStatus` |
+| `400` | No push-to-start token registered, Live Activities switched off in Gloo, or a `durationSeconds` that is not a positive number |
+| `404` | No such device |
+| `502` | APNs refused it. Body carries `apnsStatus` and `apnsReason`; a 410 also drops the dead token |
+| `503` | Nightscout unreachable, or no recent reading to put on the card — deliberately not a 502, because that sends you somewhere else entirely |
 
 ## Layout
 

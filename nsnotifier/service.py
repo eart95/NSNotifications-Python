@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional
@@ -61,6 +62,40 @@ ACTIVITY_DISMISS_AFTER = 120
 # episode gives up and carries on as an alert-only episode.
 ACTIVITY_START_RETRY_AFTER = 8 * 60
 ACTIVITY_START_MAX_ATTEMPTS = 4
+
+# Bounds on a manually requested activity's lifetime.
+#
+# The ceiling is iOS's, not ours: ActivityKit ends an activity after eight
+# hours whatever anyone asks for, so accepting a larger number would be
+# accepting a promise that cannot be kept. The floor stops a zero or a typo
+# producing a card that goes stale before anyone has looked at it.
+MANUAL_START_MIN_DURATION = 5 * 60
+MANUAL_START_MAX_DURATION = 8 * 3600
+MANUAL_START_DEFAULT_DURATION = 2 * 3600
+# How far back to look for a reading to put on the card.
+MANUAL_START_HISTORY = 3600
+
+
+@dataclass(frozen=True)
+class ManualStartResult:
+    """What `POST /v1/devices/{id}/request-start` should answer with.
+
+    The HTTP status is decided here rather than in the route because every one
+    of them is a fact about the *device or the push*, not about the request:
+    whether the row exists, whether it can be addressed, what Apple said. The
+    route's job is to render it.
+    """
+
+    status: int
+    detail: str
+    body: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == 200
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"detail": self.detail, **self.body}
 
 
 @dataclass
@@ -632,6 +667,187 @@ class NotifierService:
         if push.token_is_dead:
             await self._store.clear_token(device.device_id, "apnsToken")
         return push.ok
+
+    # --- manual start -----------------------------------------------------
+
+    async def request_start(
+        self,
+        device_id: str,
+        duration_seconds: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> ManualStartResult:
+        """Start a Live Activity on demand, outside the episode rules.
+
+        Everything else in this service starts an activity because glucose said
+        so. This starts one because a person asked, which is what you want when
+        the question is "does push-to-start work on this phone" and the honest
+        alternative is waiting for a hypo.
+
+        **It is deliberately stateless.** No episode is recorded, so the tick
+        loop will not update or end this activity — it sits with the numbers it
+        was given until its stale date, and iOS removes it at the eight-hour
+        ceiling. That is the right shape for a manual trigger: an episode
+        written here would be evaluated against real glucose on the very next
+        tick and, for a `carbRise` with no carbohydrate behind it, ended fifteen
+        minutes later. A card that vanishes on its own is worse than one that
+        plainly says when it goes stale.
+
+        It also degrades safely against the automatic path. The phone will
+        register this activity's token under this episode id; when a real
+        episode starts, the tick sees the mismatch, logs it, and sends its own
+        push-to-start — which is exactly the recovery that already exists.
+        """
+        now = time.time() if now is None else now
+
+        devices = {d.get("deviceID"): d for d in await self._store.list_devices()}
+        raw = devices.get(device_id)
+        if raw is None:
+            return ManualStartResult(404, f"No device is registered as {device_id}.")
+
+        try:
+            device = Device.from_registration(raw)
+        except (KeyError, TypeError, ValueError) as error:
+            return ManualStartResult(404, f"The registration for {device_id} could not be read: {error}")
+
+        if not device.push_to_start_token:
+            return ManualStartResult(
+                400,
+                "This device has not registered a push-to-start token, so nothing can begin a "
+                "Live Activity on it. Open Gloo with Live Activities enabled in iOS Settings and "
+                "let it register.",
+            )
+        if not device.live_activities_enabled:
+            # The flag is the user's own setting, arriving on every
+            # registration. Honouring it here costs one toggle to work around
+            # and is the difference between a debugging tool and a way to put a
+            # card on someone's Lock Screen against their preference.
+            return ManualStartResult(
+                400,
+                "This device has Live Activities switched off in Gloo. Turn on Settings › "
+                "Notifications › Live Activity and try again.",
+            )
+
+        duration = self._manual_duration(duration_seconds)
+        if duration is None:
+            return ManualStartResult(400, "durationSeconds must be a positive number of seconds.")
+
+        # A Live Activity with no glucose on it is not worth starting, and
+        # `build_state` refuses to invent one.
+        try:
+            readings = await self._nightscout.entries(now - MANUAL_START_HISTORY, now)
+            treatments = await self._nightscout.treatments(
+                now - self._config.nightscout.treatment_hours * 3600
+            )
+        except NightscoutError as error:
+            # Upstream, but not APNs — worth its own status so "Apple refused
+            # it" and "there was nothing to show" are not the same answer.
+            return ManualStartResult(503, f"Could not read Nightscout: {error}")
+
+        if not readings:
+            return ManualStartResult(
+                503,
+                f"No glucose readings in the last {int(MANUAL_START_HISTORY / 60)} minutes, so there "
+                "would be nothing on the card.",
+            )
+
+        # Kind from the newest reading. A hypo card during an actual hypo says
+        # something true; the rest of the time the meal card is the neutral one,
+        # and it is the one that does not claim an emergency.
+        latest = readings[-1]
+        kind = (
+            EpisodeKind.HYPO_RISK
+            if latest.mgdl < device.configuration.low
+            else EpisodeKind.CARB_RISE
+        )
+        episode = Episode(kind, started_at=now).advanced()
+
+        prediction = momentum_forecast(readings, now, device.configuration.prediction_horizon)
+        content = self._build_state(
+            episode,
+            device,
+            readings,
+            prediction,
+            carbs_on_board(treatments, now),
+            insulin_on_board(treatments, now),
+            now,
+        )
+        if content is None:
+            return ManualStartResult(503, "Could not build a content state from the current data.")
+
+        push = await self._apns.send_live_activity(
+            token=device.push_to_start_token,
+            production=device.is_production,
+            event="start",
+            content_state=content,
+            attributes_type=activity_builder.ATTRIBUTES_TYPE,
+            attributes=activity_builder.attributes_for(episode),
+            # The only lever a start push has over how long the card stays
+            # useful. After this iOS dims it to say it can no longer be trusted
+            # as current, which for an activity nothing is going to update is
+            # exactly the right thing for it to say.
+            stale_at=now + duration,
+            relevance_score=100 if kind is EpisodeKind.HYPO_RISK else 50,
+            timestamp=now,
+        )
+        await self._store.record_push(
+            device_id, f"request-start.{kind.value}", push.status, push.reason
+        )
+        logger.info(
+            "request-start: %s %s for %ds -> %s %s",
+            device_id,
+            episode.identifier,
+            int(duration),
+            push.status,
+            push.reason or "ok",
+        )
+
+        if push.token_is_dead:
+            await self._store.clear_token(device_id, "pushToStartToken")
+            return ManualStartResult(
+                502,
+                f"APNs rejected the push-to-start token ({push.status} {push.reason}); it has been "
+                "dropped. Open Gloo to register a new one.",
+                {"apnsStatus": push.status, "apnsReason": push.reason},
+            )
+        if not push.ok:
+            return ManualStartResult(
+                502,
+                f"APNs refused the push: {push.status} {push.reason or 'no reason given'}.",
+                {"apnsStatus": push.status, "apnsReason": push.reason, "apnsID": push.apns_id},
+            )
+
+        return ManualStartResult(
+            200,
+            "Push-to-start accepted by APNs. The activity appears once iOS creates it, and Gloo "
+            "registers its update token on the next registration.",
+            {
+                "episodeID": episode.identifier,
+                "episodeKind": kind.value,
+                "durationSeconds": duration,
+                "staleAt": now + duration,
+                "environment": device.environment,
+                "apnsStatus": push.status,
+                "apnsID": push.apns_id,
+            },
+        )
+
+    @staticmethod
+    def _manual_duration(requested: Optional[float]) -> Optional[float]:
+        """Clamp, or reject outright.
+
+        Clamping rather than refusing an out-of-range value: asking for twelve
+        hours is a reasonable thing to want and getting eight is a reasonable
+        answer, whereas asking for "soon" is not a duration at all.
+        """
+        if requested is None:
+            return MANUAL_START_DEFAULT_DURATION
+        try:
+            value = float(requested)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value <= 0:
+            return None
+        return min(max(value, MANUAL_START_MIN_DURATION), MANUAL_START_MAX_DURATION)
 
     # --- diagnostics ------------------------------------------------------
 

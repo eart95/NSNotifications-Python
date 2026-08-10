@@ -114,6 +114,26 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
         result = await service.tick()
         return result.as_dict()
 
+    @app.post("/v1/devices/{device_id}/request-start", dependencies=[Depends(authorise)])
+    async def request_start(device_id: str, body: Optional[dict[str, Any]] = None) -> JSONResponse:
+        """Start a Live Activity on this device now, outside the episode rules.
+
+        Body: ``{"durationSeconds": 7200}`` — optional; clamped to between five
+        minutes and the eight hours iOS allows an activity to live.
+
+        The activity is deliberately not recorded as an episode, so the tick
+        loop will not update or end it: it shows the numbers it was started
+        with until its stale date. See `NotifierService.request_start` for why
+        that is the right shape for a manual trigger rather than an oversight.
+        """
+        result = await service.request_start(
+            device_id, duration_seconds=(body or {}).get("durationSeconds")
+        )
+        # A JSONResponse rather than HTTPException even for the failures: the
+        # useful part of a 502 here is *what Apple said*, and `detail` alone
+        # cannot carry it.
+        return JSONResponse(result.as_dict(), status_code=result.status)
+
     @app.post("/v1/devices/{device_id}/test", dependencies=[Depends(authorise)])
     async def send_test(device_id: str) -> dict[str, Any]:
         """Send a test alert now, and a test Live Activity update if one is live.

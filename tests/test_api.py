@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from nsnotifier.api import create_app
 from nsnotifier.config import APNsConfig, Config, NightscoutConfig
-from nsnotifier.service import NotifierService, TickResult
+from nsnotifier.service import ManualStartResult, NotifierService, TickResult
 from nsnotifier.store import Store
 
 SECRET = "a-shared-secret"
@@ -26,6 +26,12 @@ class StubService(NotifierService):
     def __init__(self) -> None:  # noqa: D107 - deliberately not calling super
         self._last_tick = TickResult(at=0, readings=12, devices=1)
         self.ticks = 0
+        self.start_requests: list[tuple[str, object]] = []
+        self.start_result = ManualStartResult(200, "accepted", {"episodeID": "carbRise.1"})
+
+    async def request_start(self, device_id, duration_seconds=None, now=None):
+        self.start_requests.append((device_id, duration_seconds))
+        return self.start_result
 
     @property
     def last_tick(self):
@@ -128,3 +134,55 @@ def test_a_device_can_take_itself_off(client):
 def test_an_external_scheduler_can_drive_a_tick(client):
     assert client.post("/v1/tick", headers=auth()).status_code == 200
     assert client.post("/v1/tick").status_code == 401
+
+
+# --- request-start ---------------------------------------------------------
+
+
+def test_request_start_needs_the_shared_secret(client, service):
+    assert client.post("/v1/devices/device-1/request-start", json={}).status_code == 401
+    assert (
+        client.post(
+            "/v1/devices/device-1/request-start",
+            json={},
+            headers={"Authorization": "Bearer nope"},
+        ).status_code
+        == 403
+    )
+    assert service.start_requests == []
+
+
+def test_request_start_passes_the_duration_through(client, service):
+    response = client.post(
+        "/v1/devices/device-1/request-start", json={"durationSeconds": 7200}, headers=auth()
+    )
+    assert response.status_code == 200
+    assert response.json()["episodeID"] == "carbRise.1"
+    assert service.start_requests == [("device-1", 7200)]
+
+
+def test_request_start_works_with_no_body_at_all(client, service):
+    # An empty body is a request for the default duration, not an error.
+    assert client.post("/v1/devices/device-1/request-start", headers=auth()).status_code == 200
+    assert service.start_requests == [("device-1", None)]
+
+
+def test_request_start_propagates_the_status_the_service_chose(client, service):
+    service.start_result = ManualStartResult(
+        502, "APNs refused the push: 403 ExpiredProviderToken.", {"apnsReason": "ExpiredProviderToken"}
+    )
+    response = client.post("/v1/devices/device-1/request-start", json={}, headers=auth())
+
+    assert response.status_code == 502
+    body = response.json()
+    # The useful part of a 502 here is what Apple said, which a bare `detail`
+    # string could not carry.
+    assert body["apnsReason"] == "ExpiredProviderToken"
+    assert "403" in body["detail"]
+
+
+def test_request_start_reports_an_unknown_device_as_404(client, service):
+    service.start_result = ManualStartResult(404, "No device is registered as ghost.")
+    response = client.post("/v1/devices/ghost/request-start", json={}, headers=auth())
+    assert response.status_code == 404
+    assert "ghost" in response.json()["detail"]

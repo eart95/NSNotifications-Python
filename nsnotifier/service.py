@@ -633,6 +633,76 @@ class NotifierService:
             await self._store.clear_token(device.device_id, "apnsToken")
         return push.ok
 
+    # --- diagnostics ------------------------------------------------------
+
+    async def send_test(self, device_id: str, now: Optional[float] = None) -> dict[str, Any]:
+        """Push a test alert, and a test Live Activity update if one is running.
+
+        The problem this solves: every other way of answering "does a push from
+        this service actually reach that phone" involves waiting for a hypo.
+        APNs returning 200 does not answer it — the payload can still be
+        dropped on the device, silently, for half a dozen reasons — so the only
+        real test is to send one and have a person look at the screen.
+        """
+        now = time.time() if now is None else now
+        devices = {d.get("deviceID"): d for d in await self._store.list_devices()}
+        raw = devices.get(device_id)
+        if raw is None:
+            return {"error": f"no device registered as {device_id}"}
+
+        device = Device.from_registration(raw)
+        report: dict[str, Any] = {
+            "deviceID": device_id,
+            "environment": device.environment,
+            "hasAPNsToken": bool(device.apns_token),
+            "hasPushToStartToken": bool(device.push_to_start_token),
+            "activityEpisodeID": device.activity_episode_id,
+        }
+
+        if device.apns_token:
+            push = await self._apns.send_alert(
+                token=device.apns_token,
+                production=device.is_production,
+                title="Gloo test",
+                body="If you can see this, alerts from the notification service reach this phone.",
+                envelope={
+                    "schema": 1,
+                    "purpose": "alert",
+                    "id": f"test.{int(now)}",
+                    "sentAt": now,
+                },
+            )
+            await self._store.record_push(device_id, "test.alert", push.status, push.reason)
+            report["alert"] = {"status": push.status, "reason": push.reason}
+        else:
+            report["alert"] = {"skipped": "no apnsToken registered"}
+
+        # An update, not a start: a test that started a real Live Activity would
+        # put a hypo card on someone's Lock Screen for a situation that is not
+        # happening.
+        state = await self._store.get_state(device_id)
+        episode = Episode.from_dict(state.get("episode"))
+        if device.activity_token and episode and device.activity_episode_id == episode.identifier:
+            content = self._build_state(episode.advanced(), device, [], [], None, None, now)
+            if content is None:
+                report["liveActivity"] = {"skipped": "no readings to build a state from"}
+            else:
+                push = await self._apns.send_live_activity(
+                    token=device.activity_token,
+                    production=device.is_production,
+                    event="update",
+                    content_state=content,
+                    timestamp=now,
+                )
+                await self._store.record_push(device_id, "test.activity", push.status, push.reason)
+                report["liveActivity"] = {"status": push.status, "reason": push.reason}
+        else:
+            report["liveActivity"] = {
+                "skipped": "no Live Activity is running that this phone has registered a token for"
+            }
+
+        return report
+
     # --- heartbeat --------------------------------------------------------
 
     async def _heartbeat(self) -> None:

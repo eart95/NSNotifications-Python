@@ -189,3 +189,4 @@ async def test_records_why_a_start_could_not_be_sent(tmp_path):
         row["reason"] for row in await store.recent_pushes() if row["kind"] == "activity.start.skipped"
     ]
     assert any("pushToStartToken" in reason for reason in reasons)
+

@@ -164,3 +164,50 @@ async def test_a_server_error_is_retried():
     )
     assert not result.ok
     assert len(recorder.requests) == 2
+
+
+async def test_live_activity_updates_go_out_at_high_priority():
+    # Priority 5 is documented as "the system may delay delivery, and may
+    # coalesce or drop updates to save power", and that is exactly what it
+    # does: APNs returns 200 and the update never reaches the phone. From the
+    # server, every one of those is indistinguishable from a delivery — which
+    # is how a Lock Screen sits frozen for an hour with nothing but successes
+    # in the log.
+    recorder = Recorder()
+    await client_with(recorder).send_live_activity(
+        token="abc",
+        production=True,
+        event="update",
+        content_state={"schema": 2, "sequence": 3},
+        timestamp=1_770_000_000,
+    )
+    assert recorder.requests[0]["headers"]["apns-priority"] == "10"
+
+
+async def test_every_live_activity_event_is_high_priority():
+    recorder = Recorder()
+    client = client_with(recorder)
+    await client.send_live_activity(
+        token="abc", production=True, event="start", content_state={},
+        attributes_type="GlucoseActivityAttributes", attributes={}, timestamp=1,
+    )
+    await client.send_live_activity(
+        token="abc", production=True, event="end", content_state={}, timestamp=2
+    )
+    assert {r["headers"]["apns-priority"] for r in recorder.requests} == {"10"}
+
+
+async def test_a_live_activity_payload_stays_under_the_ceiling():
+    # ActivityKit drops a content state over 4 KB silently — APNs still returns
+    # 200. A payload this size would be invisible in every log there is.
+    recorder = Recorder()
+    await client_with(recorder).send_live_activity(
+        token="abc",
+        production=True,
+        event="update",
+        content_state={"spark": [120.0] * 16, "headline": "Heading low", "detail": "Falling quickly"},
+        timestamp=1_770_000_000,
+    )
+    import json as _json
+
+    assert len(_json.dumps(recorder.requests[0]["json"]).encode()) < 4096

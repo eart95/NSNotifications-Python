@@ -114,6 +114,18 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
         result = await service.tick()
         return result.as_dict()
 
+    @app.post("/v1/devices/{device_id}/test", dependencies=[Depends(authorise)])
+    async def send_test(device_id: str) -> dict[str, Any]:
+        """Send a test alert now, and a test Live Activity update if one is live.
+
+        Exists because a 200 from APNs does not mean anything arrived. The
+        payload can still be dropped on the device — priority throttling, a
+        content state that will not decode, Low Power Mode — and every one of
+        those looks identical from here. This is the only way to answer the
+        question in five seconds rather than by waiting for a hypo.
+        """
+        return await service.send_test(device_id)
+
     @app.get("/v1/diagnostics", dependencies=[Depends(authorise)])
     async def diagnostics(limit: int = 50) -> dict[str, Any]:
         """What was actually sent, and what APNs said about it.

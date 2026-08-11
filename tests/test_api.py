@@ -109,6 +109,25 @@ def test_registration_round_trips(client):
     assert listed[0]["hasPushToStartToken"] is True
 
 
+def test_diagnostics_says_whether_the_activity_token_arrived(client):
+    # The question this answers is the one that cannot be answered from the
+    # phone: the app can hold an update token on disk and still have failed to
+    # hand it over, and from here that is indistinguishable from never having
+    # had one — both produce a correctly skipped update and a frozen card.
+    client.put("/v1/devices/device-1", json=registration(), headers=auth())
+    listed = client.get("/v1/diagnostics", headers=auth()).json()["devices"]
+    assert listed[0]["hasActivityToken"] is False
+
+    client.put(
+        "/v1/devices/device-1",
+        json=registration(activityToken="activity-token", activityEpisodeID="hypoRisk.1770000000"),
+        headers=auth(),
+    )
+    listed = client.get("/v1/diagnostics", headers=auth()).json()["devices"]
+    assert listed[0]["hasActivityToken"] is True
+    assert listed[0]["activityEpisodeID"] == "hypoRisk.1770000000"
+
+
 def test_the_path_and_the_body_must_agree(client):
     response = client.put("/v1/devices/other", json=registration(), headers=auth())
     assert response.status_code == 400

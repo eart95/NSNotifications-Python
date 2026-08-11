@@ -121,10 +121,12 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
         Body: ``{"durationSeconds": 7200}`` — optional; clamped to between five
         minutes and the eight hours iOS allows an activity to live.
 
-        The activity is deliberately not recorded as an episode, so the tick
-        loop will not update or end it: it shows the numbers it was started
-        with until its stale date. See `NotifierService.request_start` for why
-        that is the right shape for a manual trigger rather than an oversight.
+        The card it starts is a real one: recorded as a manual episode,
+        refreshed with current glucose by every tick exactly like an automatic
+        one, and ended on its own clock when the duration runs out. It is kept
+        apart from the automatic episode rather than written into the same slot,
+        and stands down the moment a real episode begins — see
+        `NotifierService.request_start`.
         """
         result = await service.request_start(
             device_id, duration_seconds=(body or {}).get("durationSeconds")
@@ -161,6 +163,16 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
                     "environment": device.get("environment"),
                     "hasAPNsToken": bool(device.get("apnsToken")),
                     "hasPushToStartToken": bool(device.get("pushToStartToken")),
+                    # Reported separately from `activityEpisodeID` because the
+                    # two go missing for different reasons and the fix is
+                    # different for each. An episode id with no token is a phone
+                    # that saw the activity but could not hand over the token
+                    # addressing it; a token with no episode id is a pairing
+                    # that was written apart, which the app is built to make
+                    # impossible. Both end in the same silent skip on the update
+                    # path, and without this row they were indistinguishable
+                    # from here.
+                    "hasActivityToken": bool(device.get("activityToken")),
                     "activityEpisodeID": device.get("activityEpisodeID"),
                     "registeredAt": device.get("registeredAt"),
                     "alertsEnabled": device.get("alertsEnabled"),

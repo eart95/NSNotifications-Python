@@ -210,6 +210,30 @@ nsnotifier/
   skipping every push for a card that does not exist — so a start is retried up
   to four times, eight minutes apart, before the episode carries on as
   alert-only.
+* **A start push has three requirements APNs does not check.** `attributes-type`
+  and `attributes`; an **`alert`**; and **`input-push-token: 1`**. Apple lists
+  all three in [Starting and updating Live Activities with ActivityKit push
+  notifications](https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities-with-activitykit-push-notifications).
+  A start missing any of them is accepted with a 200 and discarded on the
+  device — no activity, no error, nothing in any log anywhere. Two of them were
+  missing here, and between them they account for every symptom this feature has
+  ever had:
+  * The **alert** was sent only for hypo cards, on the reasoning that a meal
+    should not buzz. That is a real concern and it belongs in `sound`, which is
+    the optional part; the alert dictionary itself is not optional. Meal cards
+    therefore never appeared at all — and since `request-start` picks the meal
+    kind unless the user is actually hypo, the one path anyone ever tests was
+    the one path that was malformed. `POST /v1/devices/{id}/request-start`
+    passed no alert whatever.
+  * **`input-push-token: 1`** is what asks iOS 18+ to mint an update token for
+    the activity being started and hand it to `pushTokenUpdates`. Without it a
+    card can appear and still have nothing addressing it, so every later update
+    is skipped for a pairing the phone was never given — which reads from the
+    server, and from the app, as "the device failed to register its token".
+  `send_live_activity` now sets `input-push-token` itself and raises on a start
+  with no alert, rather than leaving either to a call site. The failure is
+  invisible everywhere else, so the only place it can be caught is before the
+  push goes out.
 * **This service is the sole owner of Live Activities.** The app does not start,
   end or replace them; it discovers what the service started and reports the
   token that addresses it. Two systems minting episode identities for the same

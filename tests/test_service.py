@@ -198,7 +198,7 @@ async def test_a_hypo_starts_an_activity_through_push_to_start(tmp_path):
     assert start["attributes_type"] == "GlucoseActivityAttributes"
     # A hypo announces itself. An activity that appears silently on a locked
     # phone at night has not warned anybody.
-    assert start["alert"] is not None
+    assert start["alert"]["sound"] == "default"
 
 
 async def test_a_meal_starts_quietly(tmp_path):
@@ -209,9 +209,13 @@ async def test_a_meal_starts_quietly(tmp_path):
     await service.tick(now=ANCHOR)
     start = next(push for push in apns.activities if push["event"] == "start")
     assert start["attributes"]["episodeKind"] == "carbRise"
-    # No banner: an activity that buzzes for every plate of pasta gets the
-    # whole feature switched off.
-    assert start["alert"] is None
+    # Quietly means no sound, not no alert. This test used to assert
+    # `alert is None`, which is what kept a meal card from ever appearing:
+    # ActivityKit requires an alert on a start and discards a start push
+    # without one, so the kind the manual `request-start` almost always picks
+    # was the kind that could never work.
+    assert start["alert"]["title"]
+    assert "sound" not in start["alert"]
 
 
 async def test_updates_only_the_activity_the_phone_says_is_running(tmp_path):

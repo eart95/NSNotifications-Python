@@ -189,12 +189,51 @@ async def test_every_live_activity_event_is_high_priority():
     client = client_with(recorder)
     await client.send_live_activity(
         token="abc", production=True, event="start", content_state={},
-        attributes_type="GlucoseActivityAttributes", attributes={}, timestamp=1,
+        attributes_type="GlucoseActivityAttributes", attributes={},
+        alert={"title": "Heading low", "body": "Falling quickly"}, timestamp=1,
     )
     await client.send_live_activity(
         token="abc", production=True, event="end", content_state={}, timestamp=2
     )
     assert {r["headers"]["apns-priority"] for r in recorder.requests} == {"10"}
+
+
+async def test_a_start_asks_for_an_update_token():
+    # `input-push-token: 1` is what makes iOS mint a push token for the
+    # activity being started and deliver it to `pushTokenUpdates`. Without it
+    # the card can appear and still have nothing addressing it, so every
+    # update afterwards is skipped for want of a pairing the phone was never
+    # given — which is indistinguishable from an app that failed to register.
+    recorder = Recorder()
+    await client_with(recorder).send_live_activity(
+        token="abc", production=True, event="start", content_state={},
+        attributes_type="GlucoseActivityAttributes", attributes={},
+        alert={"title": "Carbs on board", "body": "58 g absorbing"}, timestamp=1,
+    )
+    assert recorder.requests[0]["json"]["aps"]["input-push-token"] == 1
+
+
+async def test_a_start_without_an_alert_is_refused_here_rather_than_by_the_device():
+    # ActivityKit requires an alert on a start and discards a start push
+    # without one — accepted by APNs with a 200 and gone by the time it reaches
+    # the device, leaving nothing in any log on either side. Raising is the
+    # only way that failure is ever visible.
+    with pytest.raises(ValueError):
+        await client_with(Recorder()).send_live_activity(
+            token="abc", production=True, event="start", content_state={},
+            attributes_type="GlucoseActivityAttributes", attributes={}, timestamp=1,
+        )
+
+
+async def test_an_update_needs_no_alert():
+    # The requirement is specific to `start`. An update that alerted every two
+    # minutes would be unusable.
+    recorder = Recorder()
+    await client_with(recorder).send_live_activity(
+        token="abc", production=True, event="update", content_state={}, timestamp=1
+    )
+    assert "alert" not in recorder.requests[0]["json"]["aps"]
+    assert "input-push-token" not in recorder.requests[0]["json"]["aps"]
 
 
 async def test_a_live_activity_payload_stays_under_the_ceiling():

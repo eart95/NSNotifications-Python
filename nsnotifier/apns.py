@@ -304,16 +304,34 @@ class APNsClient:
     ) -> PushResult:
         """Start, update or end a Live Activity.
 
-        ``event`` is ``start``, ``update`` or ``end``. A ``start`` must carry
-        ``attributes`` and ``attributes-type`` and must be sent to the device's
-        *push-to-start* token; ``update`` and ``end`` go to the running
-        activity's own token. Sending one to the other's token fails in ways
-        that are not obviously about that, so the service keeps them apart.
+        ``event`` is ``start``, ``update`` or ``end``. A ``start`` must be sent
+        to the device's *push-to-start* token; ``update`` and ``end`` go to the
+        running activity's own token. Sending one to the other's token fails in
+        ways that are not obviously about that, so the service keeps them apart.
 
         ``timestamp`` is APNs' own ordering field and is required. It is not the
         same thing as the ``sequence`` inside the content state: this one lets
         *APNs* discard an out-of-order push, and the sequence lets the *phone*
         discard one that got through anyway.
+
+        A ``start`` has three further requirements, all of them enforced below
+        rather than left to the caller, because **APNs validates none of them**.
+        A start push missing any of these is accepted with a 200, and then
+        silently discarded on the device: no activity, no error, no trace on
+        either side. Apple's "Starting and updating Live Activities with
+        ActivityKit push notifications" lists them:
+
+        * ``attributes-type`` and ``attributes``, so ActivityKit knows what to
+          build;
+        * an ``alert`` — "Include an ``alert`` in the JSON payload" is a
+          requirement of the start payload, not a presentation choice. It is
+          *how* the payload is alerting that is optional, and that is what the
+          ``sound`` key inside it controls;
+        * ``input-push-token: 1``, on iOS 18 and later, which is what asks the
+          system to mint an update token for the activity being started and
+          deliver it to ``pushTokenUpdates``. Without it the activity can
+          appear and still have no token addressing it, so every subsequent
+          update is skipped for want of a pairing the phone was never given.
         """
         aps: dict[str, Any] = {
             "timestamp": int(timestamp if timestamp is not None else time.time()),
@@ -323,8 +341,14 @@ class APNsClient:
         if event == "start":
             if not attributes_type or attributes is None:
                 raise ValueError("a start event needs attributes-type and attributes")
+            if not alert:
+                raise ValueError("a start event needs an alert; ActivityKit drops one without it")
             aps["attributes-type"] = attributes_type
             aps["attributes"] = attributes
+            # Not conditional on anything. There is no version of this service
+            # that wants to start an activity it cannot then update, and an
+            # activity with no update token is precisely that.
+            aps["input-push-token"] = 1
         if stale_at is not None:
             aps["stale-date"] = int(stale_at)
         if dismiss_at is not None:
@@ -332,7 +356,8 @@ class APNsClient:
         if alert is not None:
             # An alert on a Live Activity push is what makes it announce itself
             # on a locked phone and on the watch, rather than appearing
-            # silently on a screen nobody is looking at.
+            # silently on a screen nobody is looking at. Mandatory on a start,
+            # optional on an update — see the docstring.
             aps["alert"] = alert
         if relevance_score is not None:
             aps["relevance-score"] = relevance_score

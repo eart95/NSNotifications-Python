@@ -56,6 +56,12 @@ async def test_starts_an_activity_on_request(tmp_path):
     assert push["attributes"]["episodeID"] == result.body["episodeID"]
     # The one lever a start push has over how long the card stays useful.
     assert push["stale_at"] == ANCHOR + 7200
+    # ActivityKit requires an alert on a start and discards a start push
+    # without one. This route almost always picks the meal kind — a hypo card
+    # only when the user is actually hypo — so it was the path that exercised
+    # the missing alert every single time, and the reason a requested card was
+    # accepted by APNs with a 200 and then never appeared.
+    assert push["alert"]["title"]
 
 
 async def test_the_response_says_enough_to_act_on(tmp_path):

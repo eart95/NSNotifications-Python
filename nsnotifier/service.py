@@ -419,6 +419,19 @@ class NotifierService:
             return False
         return (now - float(ledger.get("at") or 0)) >= ACTIVITY_START_RETRY_AFTER
 
+    @staticmethod
+    def _start_alert(state: dict[str, Any], kind: EpisodeKind) -> dict[str, str]:
+        """The alert every start push must carry.
+
+        Required by ActivityKit, so the only question this answers is how loud
+        it is. A hypo gets a sound; a meal card gets the same words and no
+        sound, which lights the screen without waking anyone.
+        """
+        alert = {"title": state["headline"], "body": state["detail"]}
+        if kind is EpisodeKind.HYPO_RISK:
+            alert["sound"] = "default"
+        return alert
+
     async def _start_activity(
         self,
         episode: Episode,
@@ -480,15 +493,19 @@ class NotifierService:
             attributes_type=activity_builder.ATTRIBUTES_TYPE,
             attributes=activity_builder.attributes_for(episode),
             stale_at=stale_at if stale_at is not None else self._stale_at(readings, now),
-            # A hypo announces itself; a meal does not. An activity that
-            # appears silently on a locked phone at night has not warned
-            # anyone, and one that buzzes for every plate of pasta gets the
-            # whole feature turned off.
-            alert=(
-                {"title": state["headline"], "body": state["detail"]}
-                if episode.kind is EpisodeKind.HYPO_RISK
-                else None
-            ),
+            # Always an alert, because ActivityKit requires one on a start and
+            # discards a start push without it — accepted by APNs with a 200,
+            # gone by the time it reaches the device. Omitting it for meals is
+            # why a carbRise card never once appeared: every manual
+            # `request-start` picks the meal kind unless the user is actually
+            # hypo, so the one path being tested was the one path that was
+            # malformed.
+            #
+            # The intent behind that omission survives in `sound`. A hypo
+            # announces itself; a meal lights the screen and stays quiet. That
+            # is the part that was ever a choice — one that buzzes for every
+            # plate of pasta gets the whole feature turned off.
+            alert=self._start_alert(state, episode.kind),
             relevance_score=100 if episode.kind is EpisodeKind.HYPO_RISK else 50,
             timestamp=now,
         )
@@ -906,6 +923,12 @@ class NotifierService:
             # stale: the tick keeps the reading fresh, and the expiry is the
             # thing the caller actually chose.
             stale_at=expires_at,
+            # Required, like every start. This path had no alert whatsoever,
+            # which is why a requested card was accepted by APNs with a 200 and
+            # then never appeared — and why the very next tick reported that
+            # the phone had not registered an activity token for an episode
+            # whose activity had never been created.
+            alert=self._start_alert(content, kind),
             relevance_score=100 if kind is EpisodeKind.HYPO_RISK else 50,
             timestamp=now,
         )

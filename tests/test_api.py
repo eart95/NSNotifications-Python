@@ -27,11 +27,16 @@ class StubService(NotifierService):
         self._last_tick = TickResult(at=0, readings=12, devices=1)
         self.ticks = 0
         self.start_requests: list[tuple[str, object]] = []
-        self.start_result = ManualStartResult(200, "accepted", {"episodeID": "carbRise.1"})
+        self.start_result = ManualStartResult(200, "accepted", {"sessionID": "s.1770000000"})
+        self.dismissals: list[tuple[str, object]] = []
 
     async def request_start(self, device_id, duration_seconds=None, now=None):
         self.start_requests.append((device_id, duration_seconds))
         return self.start_result
+
+    async def dismiss(self, device_id, session_id=None, now=None):
+        self.dismissals.append((device_id, session_id))
+        return {"status": "ok", "detail": "Card forgotten.", "sessionID": session_id}
 
     @property
     def last_tick(self):
@@ -120,12 +125,12 @@ def test_diagnostics_says_whether_the_activity_token_arrived(client):
 
     client.put(
         "/v1/devices/device-1",
-        json=registration(activityToken="activity-token", activityEpisodeID="hypoRisk.1770000000"),
+        json=registration(activityToken="activity-token", activitySessionID="s.1770000000"),
         headers=auth(),
     )
     listed = client.get("/v1/diagnostics", headers=auth()).json()["devices"]
     assert listed[0]["hasActivityToken"] is True
-    assert listed[0]["activityEpisodeID"] == "hypoRisk.1770000000"
+    assert listed[0]["activitySessionID"] == "s.1770000000"
 
 
 def test_the_path_and_the_body_must_agree(client):
@@ -176,7 +181,7 @@ def test_request_start_passes_the_duration_through(client, service):
         "/v1/devices/device-1/request-start", json={"durationSeconds": 7200}, headers=auth()
     )
     assert response.status_code == 200
-    assert response.json()["episodeID"] == "carbRise.1"
+    assert response.json()["sessionID"] == "s.1770000000"
     assert service.start_requests == [("device-1", 7200)]
 
 
@@ -205,3 +210,22 @@ def test_request_start_reports_an_unknown_device_as_404(client, service):
     response = client.post("/v1/devices/ghost/request-start", json={}, headers=auth())
     assert response.status_code == 404
     assert "ghost" in response.json()["detail"]
+
+
+def test_a_dismissal_names_the_card_it_refers_to(client, service):
+    # The phone reports the swipe, and says *which* card it swiped. A dismissal
+    # that arrived after the card had been replaced would otherwise take down
+    # its successor.
+    response = client.post(
+        "/v1/devices/device-1/dismiss",
+        headers={"Authorization": f"Bearer {SECRET}"},
+        json={"sessionID": "s.1770000000"},
+    )
+    assert response.status_code == 200
+    assert service.dismissals == [("device-1", "s.1770000000")]
+
+
+def test_a_dismissal_needs_the_secret(client, service):
+    response = client.post("/v1/devices/device-1/dismiss", json={"sessionID": "s.1"})
+    assert response.status_code == 401
+    assert service.dismissals == []

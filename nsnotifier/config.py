@@ -100,23 +100,29 @@ class Config:
     database_path: Path
     # Seconds between ticks in `serve`/`worker`.
     #
-    # Two minutes, not five. Nightscout's own cadence is five, so most ticks
-    # re-read the same reading — but a running Live Activity is refreshed on
-    # every tick, and at a five-minute cadence its face could be nearly five
-    # minutes behind before anything arrived to correct it. The extra reads are
-    # a few kilobytes; the difference on a Lock Screen during a hypo is the
-    # whole point of the feature.
+    # One minute, and deliberately faster than any card's own cadence. The tick
+    # is no longer what decides when a push goes out — each kind sets that for
+    # itself, two minutes for a low and five for a meal — so what the interval
+    # actually governs is how quickly the service *notices*: that glucose went
+    # under 80, that a meal was logged, that a fall needs to take the card over
+    # from a meal. At a five-minute tick a low could be four minutes old before
+    # anything appeared, which is most of the time in which it mattered.
     #
-    # The app's `serverTakeoverAfter` is derived from this: it starts writing
-    # states itself after four missed ticks. Change one and change the other.
-    poll_interval: int = 120
+    # The cost is reads, not pushes: most ticks re-read the same Nightscout
+    # reading and decide nothing is due.
+    poll_interval: int = 60
     # Jitter, so a fleet of these does not stampede a Nightscout site on the
     # minute boundary.
     poll_jitter: int = 10
-    # How often, at most, to send a device a silent "go and sync" push. iOS
-    # budgets background pushes per app per day and drops them silently once an
-    # app spends too many, so this is rationed rather than sent every tick.
-    # Zero disables them entirely.
+    # How often, at most, to send a device a silent "go and sync" push *while
+    # nothing is on the Lock Screen*. iOS budgets background pushes per app per
+    # day and drops them silently once an app spends too many, so this is
+    # rationed rather than sent every tick. Zero disables them entirely.
+    #
+    # While a card *is* running, this does not apply: a sync is paired with
+    # every activity push instead, because a Live Activity push runs no app
+    # code at all and the app would otherwise be showing stale data behind a
+    # current Lock Screen. See `NotifierService._maybe_refresh`.
     refresh_push_interval: float = 1800.0
     # A device that has not re-registered in this long has stopped launching
     # the app. Pushing to it wastes APNs calls and, for Live Activities,
@@ -172,7 +178,7 @@ class Config:
             ),
             shared_secret=_require("RELAY_SHARED_SECRET"),
             database_path=Path(_optional("DATABASE_PATH", "/data/nsnotifier.sqlite3")),
-            poll_interval=_int("POLL_INTERVAL_SECONDS", 120),
+            poll_interval=_int("POLL_INTERVAL_SECONDS", 60),
             poll_jitter=_int("POLL_JITTER_SECONDS", 10),
             refresh_push_interval=_float("REFRESH_PUSH_INTERVAL_SECONDS", 1800.0),
             registration_ttl_hours=_float("REGISTRATION_TTL_HOURS", 72.0),

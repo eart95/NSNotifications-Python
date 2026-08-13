@@ -1,11 +1,15 @@
-"""The token/episode pairing contract, from the service's side.
+"""The token/session pairing contract, from the service's side.
 
 The service will only update a Live Activity when the phone has registered an
-`activityToken` *and* an `activityEpisodeID` that matches the episode currently
+`activityToken` *and* an `activitySessionID` that matches the card currently
 running. That rule is correct — pushing to a token you cannot account for
 updates an activity that may have ended — but it is also unforgiving, and a
 phone that loses track of the pair produces a frozen Lock Screen and a push that
 was *correctly* skipped.
+
+The pairing is to the *session*, not the episode, and that is what makes a
+change of kind survivable: the card that was about a meal and is now about a low
+is the same card, addressed by the same token, under the same id.
 
 So these pin both halves: that a mismatch is skipped, and that the skip is
 recorded with a reason. The second is not decoration. Without it the only
@@ -29,9 +33,9 @@ async def start_an_activity(tmp_path):
     _, store, apns, service = await build(tmp_path, series([110, 95, 80, 64]))
     await store.upsert_device("device-1", registration())
     await service.tick(now=ANCHOR)
-    episode_id = apns.activities[0]["attributes"]["episodeID"]
+    session_id = apns.activities[0]["attributes"]["sessionID"]
     apns.activities.clear()
-    return store, apns, service, episode_id
+    return store, apns, service, session_id
 
 
 def updates(apns) -> list[dict[str, Any]]:
@@ -43,9 +47,9 @@ async def skips(store) -> list[dict[str, Any]]:
 
 
 async def test_a_complete_pair_is_updated(tmp_path):
-    store, apns, service, episode_id = await start_an_activity(tmp_path)
+    store, apns, service, session_id = await start_an_activity(tmp_path)
     await store.upsert_device(
-        "device-1", registration(activityToken="token-activity", activityEpisodeID=episode_id)
+        "device-1", registration(activityToken="token-activity", activitySessionID=session_id)
     )
 
     await service.tick(now=ANCHOR + 120)
@@ -57,9 +61,9 @@ async def test_a_missing_token_is_skipped_and_says_so(tmp_path):
     # The phone knows which episode is running but has not managed to register
     # the activity's push token — the exact state a cold launch used to leave it
     # in. There is nothing to address, so nothing is sent.
-    store, apns, service, episode_id = await start_an_activity(tmp_path)
+    store, apns, service, session_id = await start_an_activity(tmp_path)
     await store.upsert_device(
-        "device-1", registration(activityToken=None, activityEpisodeID=episode_id)
+        "device-1", registration(activityToken=None, activitySessionID=session_id)
     )
 
     await service.tick(now=ANCHOR + 120)
@@ -68,22 +72,22 @@ async def test_a_missing_token_is_skipped_and_says_so(tmp_path):
     assert any("no activityToken" in reason for reason in reasons)
 
 
-async def test_a_stale_episode_id_is_skipped_and_says_which(tmp_path):
-    # A token paired with an episode that is not the one running addresses an
-    # activity the server is not managing. Pushing to it would put this
-    # episode's glucose on a previous episode's Lock Screen card.
+async def test_a_stale_session_id_is_skipped_and_says_which(tmp_path):
+    # A token paired with a card that is not the one running addresses an
+    # activity the server is not managing. Pushing to it would put this card's
+    # glucose on a previous card.
     store, apns, service, _ = await start_an_activity(tmp_path)
     await store.upsert_device(
         "device-1",
-        registration(activityToken="token-activity", activityEpisodeID="hypoRisk.1"),
+        registration(activityToken="token-activity", activitySessionID="s.1"),
     )
 
     await service.tick(now=ANCHOR + 120)
     assert updates(apns) == []
     reasons = [row["reason"] for row in await skips(store)]
-    assert any("episode mismatch" in reason for reason in reasons)
+    assert any("session mismatch" in reason for reason in reasons)
     # The log has to name both sides, or the next step is guessing.
-    assert any("hypoRisk.1" in reason for reason in reasons)
+    assert any("s.1" in reason for reason in reasons)
 
 
 async def test_the_pair_recovers_without_restarting_the_episode(tmp_path):
@@ -91,29 +95,29 @@ async def test_the_pair_recovers_without_restarting_the_episode(tmp_path):
     # make happen. The episode must carry on, not be torn down and restarted:
     # a restarted episode means a new activity, a fresh cooldown, and a hypo
     # warning that disappears and reappears.
-    store, apns, service, episode_id = await start_an_activity(tmp_path)
+    store, apns, service, session_id = await start_an_activity(tmp_path)
 
     await service.tick(now=ANCHOR + 120)
     assert updates(apns) == []
 
     await store.upsert_device(
-        "device-1", registration(activityToken="token-activity", activityEpisodeID=episode_id)
+        "device-1", registration(activityToken="token-activity", activitySessionID=session_id)
     )
     await service.tick(now=ANCHOR + 240)
 
     sent = updates(apns)
     assert len(sent) == 1
     # Same episode as before the gap: nothing was restarted.
-    assert sent[0]["collapse_id"] == episode_id
+    assert sent[0]["collapse_id"] == session_id
     # And the sequence carried on climbing across the gap, so the phone will
     # accept it.
     assert sent[0]["content_state"]["sequence"] > 1
 
 
 async def test_a_two_minute_cadence_produces_a_push_per_tick(tmp_path):
-    store, apns, service, episode_id = await start_an_activity(tmp_path)
+    store, apns, service, session_id = await start_an_activity(tmp_path)
     await store.upsert_device(
-        "device-1", registration(activityToken="token-activity", activityEpisodeID=episode_id)
+        "device-1", registration(activityToken="token-activity", activitySessionID=session_id)
     )
 
     # Four ticks two minutes apart, with a fresh reading arriving partway
@@ -137,18 +141,18 @@ async def test_restarts_an_episode_whose_activity_never_appeared(tmp_path):
     # Live Activity exists: the phone still has to create one and come back with
     # its token. When it never does, the episode used to spend its whole life on
     # the update path skipping every push for a card that was not there.
-    store, apns, service, _ = await start_an_activity(tmp_path)
+    store, apns, service, session_id = await start_an_activity(tmp_path)
 
     # Two minutes later — inside the retry interval — nothing new is sent.
     await service.tick(now=ANCHOR + 120)
     assert [push for push in apns.activities if push["event"] == "start"] == []
 
-    # Well past it, the start is tried again, for the *same* episode: a new
-    # episode would mean a new identity and a fresh cooldown.
+    # Well past it, the start is tried again, for the *same* session: a new one
+    # would mean a new identity, a new token to wait for, and a fresh cooldown.
     await service.tick(now=ANCHOR + 10 * 60)
     restarts = [push for push in apns.activities if push["event"] == "start"]
     assert len(restarts) == 1
-    assert restarts[0]["attributes"]["episodeID"].startswith("hypoRisk.")
+    assert restarts[0]["attributes"]["sessionID"] == session_id
 
 
 async def test_stops_retrying_the_start_eventually(tmp_path):
@@ -166,9 +170,9 @@ async def test_stops_retrying_the_start_eventually(tmp_path):
 
 
 async def test_does_not_restart_once_the_phone_has_vouched_for_the_episode(tmp_path):
-    store, apns, service, episode_id = await start_an_activity(tmp_path)
+    store, apns, service, session_id = await start_an_activity(tmp_path)
     await store.upsert_device(
-        "device-1", registration(activityToken="token-activity", activityEpisodeID=episode_id)
+        "device-1", registration(activityToken="token-activity", activitySessionID=session_id)
     )
 
     await service.tick(now=ANCHOR + 20 * 60)

@@ -10,6 +10,23 @@ Everything decided here is decided by pure functions in ``alerts`` and
 ``episodes``. This module does the I/O and the bookkeeping, and it is written so
 that the bookkeeping is the only thing you have to check when a decision looks
 wrong.
+
+Three things about Live Activities are worth having in mind before reading the
+episode half:
+
+* **There is one card per device, and it is called a session.** It is started
+  once, updated for as long as anything is worth showing, and ended once. The
+  *kind* of thing it is about — a low, a fast movement, a meal, a card the user
+  asked for — is content, not identity, so a change of kind is one ordinary
+  update push rather than an end and a push-to-start.
+* **Each kind sets its own cadence.** A low is refreshed every two minutes and
+  a meal every five, so the tick runs faster than any of them and pushes only
+  what is due.
+* **A Live Activity push runs no app code at all.** iOS hands the payload
+  straight to the widget extension; the app does not wake, does not sync, and
+  does not know it happened. The only way the app's own data moves in step with
+  the card is a silent background push sent *alongside* the activity push,
+  which is what `_maybe_refresh` does with `paired=True`.
 """
 
 from __future__ import annotations
@@ -31,11 +48,11 @@ from .episodes import Decision, EpisodeInput, evaluate
 from .models import (
     AlertKind,
     Device,
+    EndReason,
     Episode,
     EpisodeKind,
-    EndReason,
-    ManualEpisode,
     Reading,
+    Session,
     Treatment,
 )
 from .nightscout import NightscoutClient, NightscoutError
@@ -44,27 +61,37 @@ from .store import Store
 
 logger = logging.getLogger(__name__)
 
-# How long the phone should consider a pushed activity state current before it
-# dims. Matches `GlucoseActivityController.staleWindow` in the app.
-ACTIVITY_STALE_WINDOW = 20 * 60
 # How long a finished activity lingers before iOS removes it, so "Back in
 # range" is actually read.
 ACTIVITY_DISMISS_AFTER = 120
 
-# An episode can be running with no activity on the phone to show it: the
+# How much slack a pushed state gets before the phone dims it.
+#
+# Anchored to the episode's own cadence rather than a constant: a low is
+# refreshed every two minutes, so a card that has had nothing for six is
+# genuinely behind, while a meal card at five-minute cadence is not.
+STALE_WINDOW_MULTIPLE = 3
+MINIMUM_STALE_WINDOW = 10 * 60
+
+# A session can be running with no activity on the phone to show it: the
 # push-to-start token had not arrived when it began, the start push failed, or
 # the phone came back with nothing. Those are all recoverable, so a start is
-# retried rather than the episode spending its whole life on the update path
+# retried rather than the session spending its whole life on the update path
 # skipping every push.
 #
 # Bounded, though. A phone with Live Activities switched off at the OS level
 # accepts a start push and does nothing with it, and there is no way to tell
 # that apart from a phone that is merely slow — so after a few attempts the
-# episode gives up and carries on as an alert-only episode.
+# session gives up.
 ACTIVITY_START_RETRY_AFTER = 8 * 60
 ACTIVITY_START_MAX_ATTEMPTS = 4
 
-# Bounds on a manually requested activity's lifetime.
+# The shortest gap between two silent "go and sync" pushes while a card is on
+# screen. Just under the fastest cadence any kind asks for, so a start and an
+# update landing in the same tick send one refresh rather than two.
+PAIRED_REFRESH_MIN_GAP = 110
+
+# Bounds on a manually requested card's lifetime.
 #
 # The ceiling is iOS's, not ours: ActivityKit ends an activity after eight
 # hours whatever anyone asks for, so accepting a larger number would be
@@ -72,7 +99,6 @@ ACTIVITY_START_MAX_ATTEMPTS = 4
 # producing a card that goes stale before anyone has looked at it.
 MANUAL_START_MIN_DURATION = 5 * 60
 MANUAL_START_MAX_DURATION = 8 * 3600
-MANUAL_START_DEFAULT_DURATION = 2 * 3600
 # How far back to look for a reading to put on the card.
 MANUAL_START_HISTORY = 3600
 
@@ -204,7 +230,7 @@ class NotifierService:
         state = await self._store.get_state(device.device_id)
         last_fired = _epoch_map(state.get("lastFired"), AlertKind)
         last_ended = _epoch_map(state.get("lastEnded"), EpisodeKind)
-        current = Episode.from_dict(state.get("episode"))
+        session = Session.from_dict(state.get("session"))
 
         # One forecast, reaching far enough for whichever rule looks furthest
         # ahead. See `physiology.momentum_forecast` for why it is momentum only.
@@ -213,7 +239,7 @@ class NotifierService:
 
         iob = insulin_on_board(treatments, now)
         cob = carbs_on_board(treatments, now)
-        entering = carbs_entering(treatments, now, device.configuration.carb_rise_window)
+        entering = carbs_entering(treatments, now, device.configuration.meal.window)
 
         # --- alerts -------------------------------------------------------
 
@@ -232,13 +258,13 @@ class NotifierService:
                     device = replace(device, apns_token=None)
                     break
 
-        # --- episodes -----------------------------------------------------
+        # --- the card -----------------------------------------------------
 
-        manual = ManualEpisode.from_dict(state.get("manual"))
+        pushed_activity = False
 
         if device.live_activities_enabled:
             decision = evaluate(
-                current=current,
+                session=session,
                 data=EpisodeInput(
                     readings=readings,
                     prediction=prediction,
@@ -250,51 +276,35 @@ class NotifierService:
                 last_ended=last_ended,
                 now=now,
             )
-            if manual is not None:
-                manual = await self._service_manual(
-                    manual, decision, device, readings, prediction, cob, iob, now, result, state
-                )
-
-            # A manual card holds the Lock Screen only while nothing real needs
-            # it. `_service_manual` stands down for a start or a replace, so by
-            # here a surviving manual episode means the rules said idle.
-            if manual is None:
-                current = await self._apply(
-                    decision,
-                    device=device,
-                    readings=readings,
-                    prediction=prediction,
-                    cob=cob,
-                    iob=iob,
-                    last_ended=last_ended,
-                    device_state=state,
-                    now=now,
-                    result=result,
-                )
-        else:
+            session, pushed_activity = await self._apply(
+                decision,
+                previous=session,
+                device=device,
+                readings=readings,
+                prediction=prediction,
+                cob=cob,
+                iob=iob,
+                last_ended=last_ended,
+                device_state=state,
+                now=now,
+                result=result,
+            )
+        elif session is not None:
             # The user turned Live Activities off. Take down whatever is
             # running rather than leaving it there being wrong.
-            if current is not None:
-                await self._end_activity(
-                    device, current, EndReason.CANCELLED, readings, prediction, cob, iob, now, result
-                )
-                current = None
-            if manual is not None:
-                await self._end_activity(
-                    device, manual.episode, EndReason.CANCELLED, readings, prediction, cob, iob, now, result
-                )
-                manual = None
+            await self._end_session(device, session, EndReason.CANCELLED, readings, prediction, cob, iob, now, result)
+            last_ended[session.episode.kind] = now
+            session = None
 
-        # --- silent refresh -----------------------------------------------
+        # --- keeping the app in step --------------------------------------
 
-        if await self._maybe_refresh(device, state, now):
+        if await self._maybe_refresh(device, state, now, paired=pushed_activity, session=session):
             state["lastRefreshAt"] = now
             result.refreshes_sent += 1
 
         state["lastFired"] = {kind.value: at for kind, at in last_fired.items()}
         state["lastEnded"] = {kind.value: at for kind, at in last_ended.items()}
-        state["episode"] = current.to_dict() if current else None
-        state["manual"] = manual.to_dict() if manual else None
+        state["session"] = session.to_dict() if session else None
         await self._store.put_state(device.device_id, state)
 
     # --- alerts -----------------------------------------------------------
@@ -326,12 +336,13 @@ class NotifierService:
         await self._store.record_push(device.device_id, f"alert.{alert.kind.value}", push.status, push.reason)
         return push
 
-    # --- episodes ---------------------------------------------------------
+    # --- the card ---------------------------------------------------------
 
     async def _apply(
         self,
         decision: Decision,
         *,
+        previous: Optional[Session],
         device: Device,
         readings: list[Reading],
         prediction: list[Reading],
@@ -341,100 +352,150 @@ class NotifierService:
         device_state: dict[str, Any],
         now: float,
         result: TickResult,
-    ) -> Optional[Episode]:
+    ) -> tuple[Optional[Session], bool]:
+        """Carry out one decision. Returns the session to store, and whether an
+        activity push actually went out."""
         if decision.action == "idle":
-            return None
-
-        if decision.action == "update":
-            running = decision.episode  # type: ignore[union-attr]
-            # Before pushing an update, check there is anything to update. An
-            # episode whose activity was never started — no push-to-start token
-            # at the time, a start push that failed, a phone that never came
-            # back with a token — would otherwise spend its entire life here,
-            # skipping every push for a Lock Screen card that does not exist.
-            if self._should_retry_start(device, running, device_state, now):
-                started = await self._start_activity(
-                    running, device, readings, prediction, cob, iob, now, result, state=device_state
-                )
-                return started or running
-
-            episode = running.advanced()
-            pushed = await self._update_activity(device, episode, readings, prediction, cob, iob, now, result)
-            # A failed update leaves the sequence where it was, so the next
-            # attempt does not skip a number the phone would then use as its
-            # floor.
-            return episode if pushed else running
+            return None, False
 
         if decision.action == "start":
-            return await self._start_activity(
-                decision.episode, device, readings, prediction, cob, iob, now, result, state=device_state  # type: ignore[arg-type]
+            session = await self._start_session(
+                decision.episode, device, readings, prediction, cob, iob, now, result, state=device_state
             )
+            return session, session is not None
 
         if decision.action == "end":
-            await self._end_activity(
-                device, decision.episode, decision.reason or EndReason.CANCELLED, readings, prediction, cob, iob, now, result  # type: ignore[arg-type]
-            )
-            last_ended[decision.episode.kind] = now  # type: ignore[union-attr]
-            return None
+            ending = decision.session or previous
+            if ending is not None:
+                await self._end_session(
+                    device,
+                    ending,
+                    decision.reason or EndReason.CANCELLED,
+                    readings,
+                    prediction,
+                    cob,
+                    iob,
+                    now,
+                    result,
+                )
+                last_ended[ending.episode.kind] = now
+            return None, ending is not None
 
-        if decision.action == "replace":
-            await self._end_activity(
-                device, decision.episode, decision.reason or EndReason.SUPERSEDED, readings, prediction, cob, iob, now, result  # type: ignore[arg-type]
-            )
-            last_ended[decision.episode.kind] = now  # type: ignore[union-attr]
-            return await self._start_activity(
-                decision.starting, device, readings, prediction, cob, iob, now, result, state=device_state  # type: ignore[arg-type]
-            )
+        session = decision.session
+        if session is None:
+            return previous, False
 
-        return decision.live
+        # The card exists in this service's head but not on the phone: no start
+        # push ever landed, or the phone never came back with a token for it.
+        # Same bounded retry as a fresh start.
+        if self._should_retry_start(device, session, device_state, now):
+            started = await self._start_session(
+                session.episode,
+                device,
+                readings,
+                prediction,
+                cob,
+                iob,
+                now,
+                result,
+                state=device_state,
+                session_id=session.id,
+                started_at=session.started_at,
+                sequence=session.sequence,
+                suspended=session.suspended,
+            )
+            return (started or session), started is not None
 
-    # --- has this episode actually got an activity? -----------------------
+        previous_kind = previous.episode.kind if previous else None
+        switched = previous_kind is not None and previous_kind is not session.episode.kind
+        if switched:
+            # A change of kind is never held back for the cadence. The card
+            # saying "After a meal" while glucose is 63 is the exact failure
+            # this rework exists to remove.
+            logger.info(
+                "activity: %s switching %s -> %s on session %s",
+                device.device_id,
+                previous_kind.value if previous_kind else "-",
+                session.episode.kind.value,
+                session.id,
+            )
+        elif not self._is_push_due(session, device, device_state, now):
+            # Nothing to say yet. The tick runs faster than any kind's cadence
+            # so that a switch is noticed quickly; the pushes themselves are
+            # rationed to what each kind asked for.
+            return session, False
+
+        advanced = session.advanced()
+        pushed = await self._update_activity(
+            device, advanced, readings, prediction, cob, iob, now, result, announce=switched
+        )
+        if pushed:
+            device_state["lastActivityPushAt"] = now
+            return advanced, True
+        # A failed push leaves the sequence where it was, so the next attempt
+        # does not skip a number the phone would then treat as its floor.
+        return session, False
+
+    def _is_push_due(
+        self,
+        session: Session,
+        device: Device,
+        state: dict[str, Any],
+        now: float,
+    ) -> bool:
+        last = float(state.get("lastActivityPushAt") or 0)
+        interval = device.configuration.update_interval(session.episode)
+        # Half a tick of slack, so a cadence that is a whole multiple of the
+        # poll interval does not slip a whole tick every time.
+        return (now - last) >= (interval - self._config.poll_interval / 2)
+
+    # --- has this session actually got an activity? -----------------------
 
     @staticmethod
     def _should_retry_start(
         device: Device,
-        episode: Episode,
+        session: Session,
         state: dict[str, Any],
         now: float,
     ) -> bool:
-        """Whether to (re)send a start push for an episode already under way.
+        """Whether to (re)send a start push for a session already under way.
 
         Not the same question as "did the start push succeed". A 200 from APNs
         means Apple accepted it, not that a Live Activity exists — the phone
         still has to be running Live Activities, create it, and come back with
-        its token. The only evidence that actually counts is the phone
-        registering a token paired with *this* episode.
+        its token. The only evidence that counts is the phone registering a
+        token paired with *this session*.
         """
         if not device.live_activities_enabled or not device.push_to_start_token:
             return False
-        # The phone has vouched for this episode: there is something to update.
-        if device.activity_token and device.activity_episode_id == episode.identifier:
+        # The phone has vouched for this session: there is something to update.
+        if device.activity_token and device.activity_session_id == session.id:
             return False
 
         ledger = state.get("activityStart") or {}
-        if ledger.get("episode") != episode.identifier:
-            # Never started for this episode at all.
+        if ledger.get("session") != session.id:
+            # Never started for this session at all.
             return True
         if int(ledger.get("attempts") or 0) >= ACTIVITY_START_MAX_ATTEMPTS:
             return False
         return (now - float(ledger.get("at") or 0)) >= ACTIVITY_START_RETRY_AFTER
 
     @staticmethod
-    def _start_alert(state: dict[str, Any], kind: EpisodeKind) -> dict[str, str]:
-        """The alert every start push must carry.
+    def _alert_for(content: dict[str, Any], kind: EpisodeKind) -> dict[str, str]:
+        """The alert a start — or a switch — carries.
 
-        Required by ActivityKit, so the only question this answers is how loud
-        it is. A hypo gets a sound; a meal card gets the same words and no
-        sound, which lights the screen without waking anyone.
+        Required by ActivityKit on a start, so for that the only question is how
+        loud it is. A low gets a sound; everything else gets the same words
+        silently, which lights the screen without waking anyone.
         """
-        alert = {"title": state["headline"], "body": state["detail"]}
-        if kind is EpisodeKind.HYPO_RISK:
+        alert = {"title": content["headline"], "body": content["detail"]}
+        if kind is EpisodeKind.LOW:
             alert["sound"] = "default"
         return alert
 
-    async def _start_activity(
+    async def _start_session(
         self,
-        episode: Episode,
+        episode: Optional[Episode],
         device: Device,
         readings: list[Reading],
         prediction: list[Reading],
@@ -443,15 +504,21 @@ class NotifierService:
         now: float,
         result: TickResult,
         state: Optional[dict[str, Any]] = None,
-        stale_at: Optional[float] = None,
-    ) -> Optional[Episode]:
-        """Begin an activity on a phone that may not be running the app.
+        session_id: Optional[str] = None,
+        started_at: Optional[float] = None,
+        sequence: int = 0,
+        suspended: tuple[Episode, ...] = (),
+    ) -> Optional[Session]:
+        """Put a card on a phone that may not be running the app.
 
         This is the whole point of the service. A local start is impossible from
         the background — ActivityKit refuses one and offers no way to queue it —
-        so without a push-to-start token a hypo at 4 a.m. reaches the Lock Screen
+        so without a push-to-start token a low at 4 a.m. reaches the Lock Screen
         only when the user next opens the app, which is to say afterwards.
         """
+        if episode is None:
+            return None
+
         if not device.push_to_start_token:
             logger.info(
                 "start: %s has no push-to-start token yet — nothing can put a Live Activity "
@@ -463,53 +530,50 @@ class NotifierService:
             )
             return None
 
+        started_at = now if started_at is None else started_at
+        session = Session(
+            id=session_id or Session.identifier(started_at),
+            started_at=started_at,
+            sequence=sequence + 1,
+            episode=episode,
+            suspended=suspended,
+        )
+
         if state is not None:
             ledger = state.get("activityStart") or {}
-            attempts = int(ledger.get("attempts") or 0) if ledger.get("episode") == episode.identifier else 0
-            state["activityStart"] = {
-                "episode": episode.identifier,
-                "at": now,
-                "attempts": attempts + 1,
-            }
+            attempts = int(ledger.get("attempts") or 0) if ledger.get("session") == session.id else 0
+            state["activityStart"] = {"session": session.id, "at": now, "attempts": attempts + 1}
             if attempts:
                 logger.info(
                     "start: retrying %s for %s (attempt %d) — the phone has not registered an "
                     "activity token for it",
-                    episode.identifier,
+                    session.id,
                     device.device_id,
                     attempts + 1,
                 )
 
-        episode = episode.advanced()
-        state = self._build_state(episode, device, readings, prediction, cob, iob, now)
-        if state is None:
+        content = self._build_state(session, device, readings, prediction, cob, iob, now)
+        if content is None:
             return None
 
         push = await self._apns.send_live_activity(
             token=device.push_to_start_token,
             production=device.is_production,
             event="start",
-            content_state=state,
+            content_state=content,
             attributes_type=activity_builder.ATTRIBUTES_TYPE,
-            attributes=activity_builder.attributes_for(episode),
-            stale_at=stale_at if stale_at is not None else self._stale_at(readings, now),
+            attributes=activity_builder.attributes_for(session),
+            stale_at=self._stale_at(session, device, readings, now),
             # Always an alert, because ActivityKit requires one on a start and
             # discards a start push without it — accepted by APNs with a 200,
-            # gone by the time it reaches the device. Omitting it for meals is
-            # why a carbRise card never once appeared: every manual
-            # `request-start` picks the meal kind unless the user is actually
-            # hypo, so the one path being tested was the one path that was
-            # malformed.
-            #
-            # The intent behind that omission survives in `sound`. A hypo
-            # announces itself; a meal lights the screen and stays quiet. That
-            # is the part that was ever a choice — one that buzzes for every
-            # plate of pasta gets the whole feature turned off.
-            alert=self._start_alert(state, episode.kind),
-            relevance_score=100 if episode.kind is EpisodeKind.HYPO_RISK else 50,
+            # gone by the time it reaches the device.
+            alert=self._alert_for(content, episode.kind),
+            relevance_score=100 if episode.kind is EpisodeKind.LOW else 50,
             timestamp=now,
         )
-        await self._store.record_push(device.device_id, f"activity.start.{episode.kind.value}", push.status, push.reason)
+        await self._store.record_push(
+            device.device_id, f"activity.start.{episode.kind.value}", push.status, push.reason
+        )
         result.activity_pushes += 1
 
         if push.token_is_dead:
@@ -518,23 +582,25 @@ class NotifierService:
             return None
         if not push.ok:
             return None
-        return episode
+        if state is not None:
+            state["lastActivityPushAt"] = now
+        return session
 
     async def _update_activity(
         self,
         device: Device,
-        episode: Episode,
+        session: Session,
         readings: list[Reading],
         prediction: list[Reading],
         cob: Optional[float],
         iob: Optional[float],
         now: float,
         result: TickResult,
+        announce: bool = False,
     ) -> bool:
         # Only ever address the activity the phone says is running. After a
         # push-to-start the phone has to come back with the new activity's own
-        # token, and until it does there is nothing here to update — pushing to
-        # the previous episode's token would update an activity that is gone.
+        # token, and until it does there is nothing here to update.
         #
         # A skip here is correct, and it is also the single most confusing thing
         # this service does: from the outside it looks identical to a Lock
@@ -543,45 +609,51 @@ class NotifierService:
         if not device.activity_token:
             logger.info(
                 "activity: no update for %s — the phone has not registered an activity token "
-                "(episode %s). Nothing to address.",
+                "(session %s). Nothing to address.",
                 device.device_id,
-                episode.identifier,
+                session.id,
             )
             await self._store.record_push(
                 device.device_id, "activity.update.skipped", 0, "no activityToken registered"
             )
             return False
-        if device.activity_episode_id != episode.identifier:
+        if device.activity_session_id != session.id:
             logger.info(
-                "activity: no update for %s — registered episode %s, current episode %s. "
-                "The phone is describing a different activity from the one this service is running.",
+                "activity: no update for %s — registered session %s, current session %s. "
+                "The phone is describing a different card from the one this service is running.",
                 device.device_id,
-                device.activity_episode_id or "-",
-                episode.identifier,
+                device.activity_session_id or "-",
+                session.id,
             )
             await self._store.record_push(
                 device.device_id,
                 "activity.update.skipped",
                 0,
-                f"episode mismatch: registered {device.activity_episode_id or '-'}, current {episode.identifier}",
+                f"session mismatch: registered {device.activity_session_id or '-'}, current {session.id}",
             )
             return False
 
-        state = self._build_state(episode, device, readings, prediction, cob, iob, now)
-        if state is None:
+        content = self._build_state(session, device, readings, prediction, cob, iob, now)
+        if content is None:
             return False
 
         push = await self._apns.send_live_activity(
             token=device.activity_token,
             production=device.is_production,
             event="update",
-            content_state=state,
-            stale_at=self._stale_at(readings, now),
-            relevance_score=100 if episode.kind is EpisodeKind.HYPO_RISK else 50,
-            collapse_id=episode.identifier,
+            content_state=content,
+            stale_at=self._stale_at(session, device, readings, now),
+            # A card that changes what it is about should be noticed. Ordinary
+            # refreshes stay silent — one that buzzed every two minutes during a
+            # low would get the whole feature switched off.
+            alert=self._alert_for(content, session.episode.kind) if announce else None,
+            relevance_score=100 if session.episode.kind is EpisodeKind.LOW else 50,
+            collapse_id=session.id,
             timestamp=now,
         )
-        await self._store.record_push(device.device_id, f"activity.update.{episode.kind.value}", push.status, push.reason)
+        await self._store.record_push(
+            device.device_id, f"activity.update.{session.episode.kind.value}", push.status, push.reason
+        )
         result.activity_pushes += 1
 
         if push.token_is_dead:
@@ -589,10 +661,10 @@ class NotifierService:
             result.tokens_pruned += 1
         return push.ok
 
-    async def _end_activity(
+    async def _end_session(
         self,
         device: Device,
-        episode: Episode,
+        session: Session,
         reason: EndReason,
         readings: list[Reading],
         prediction: list[Reading],
@@ -602,9 +674,9 @@ class NotifierService:
         result: TickResult,
         farewell: Optional[tuple[str, str]] = None,
     ) -> None:
-        closing = self._build_state(episode.advanced(), device, readings, prediction, cob, iob, now)
+        closing = self._build_state(session.advanced(), device, readings, prediction, cob, iob, now)
 
-        if device.activity_token and device.activity_episode_id == episode.identifier and closing is not None:
+        if device.activity_token and device.activity_session_id == session.id and closing is not None:
             push = await self._apns.send_live_activity(
                 token=device.activity_token,
                 production=device.is_production,
@@ -612,16 +684,20 @@ class NotifierService:
                 content_state=(
                     {**closing, "headline": farewell[0], "detail": farewell[1]}
                     if farewell is not None
-                    else activity_builder.with_farewell(closing, episode.kind, reason)
+                    else activity_builder.with_farewell(closing, session.episode.kind, reason)
                 ),
                 # Held briefly rather than yanked: an activity that simply
                 # vanishes leaves the user unsure whether the low passed or the
                 # app died, and "Back in range" is the only good news this
                 # system ever gets to deliver.
-                dismiss_at=now + ACTIVITY_DISMISS_AFTER if reason is EndReason.RECOVERED else now,
+                dismiss_at=now + ACTIVITY_DISMISS_AFTER
+                if reason in (EndReason.RECOVERED, EndReason.COMPLETED)
+                else now,
                 timestamp=now,
             )
-            await self._store.record_push(device.device_id, f"activity.end.{episode.kind.value}", push.status, push.reason)
+            await self._store.record_push(
+                device.device_id, f"activity.end.{session.episode.kind.value}", push.status, push.reason
+            )
             result.activity_pushes += 1
             if push.ok:
                 return
@@ -630,9 +706,8 @@ class NotifierService:
                 result.tokens_pruned += 1
 
         # No usable activity token, or the end push failed. Fall back to asking
-        # the app to stand down: without this the activity sits on the Lock
-        # Screen until iOS expires it, still describing a hypo that finished an
-        # hour ago.
+        # the app to stand down: without this the card sits on the Lock Screen
+        # until iOS expires it, still describing a low that finished an hour ago.
         if device.apns_token:
             push = await self._apns.send_background(
                 token=device.apns_token,
@@ -640,15 +715,17 @@ class NotifierService:
                 envelope={
                     "schema": 1,
                     "purpose": "standDown",
-                    "id": f"standDown.{episode.identifier}",
+                    "id": f"standDown.{session.id}",
                     "sentAt": now,
+                    "sessionID": session.id,
+                    "episodeKind": session.episode.kind.value,
                 },
             )
             await self._store.record_push(device.device_id, "activity.standDown", push.status, push.reason)
 
     def _build_state(
         self,
-        episode: Episode,
+        session: Session,
         device: Device,
         readings: list[Reading],
         prediction: list[Reading],
@@ -657,7 +734,7 @@ class NotifierService:
         now: float,
     ) -> Optional[dict[str, Any]]:
         return activity_builder.build_state(
-            episode=episode,
+            session=session,
             readings=readings,
             prediction=prediction,
             configuration=device.configuration,
@@ -668,129 +745,88 @@ class NotifierService:
         )
 
     @staticmethod
-    def _stale_at(readings: list[Reading], now: float) -> float:
-        """When the phone should start dimming the activity.
+    def _stale_at(session: Session, device: Device, readings: list[Reading], now: float) -> float:
+        """When the phone should start dimming the card.
 
         Anchored to the reading, not to the push: the question is how old the
         *data* is, and a push carrying no new reading must not refresh that
-        claim. Floored just ahead of now so a state is never handed over
-        already stale, which renders as broken rather than as outdated.
+        claim. The window scales with the episode's own cadence, so a low that
+        has had nothing for six minutes dims while a five-minute meal card does
+        not. A manual or meal card never outlives its own deadline.
         """
+        interval = device.configuration.update_interval(session.episode)
+        window = max(interval * STALE_WINDOW_MULTIPLE, MINIMUM_STALE_WINDOW)
         latest = readings[-1].at if readings else now
-        return max(latest + ACTIVITY_STALE_WINDOW, now + 120)
+        # Floored just ahead of now so a state is never handed over already
+        # stale, which renders as broken rather than as outdated.
+        stale_at = max(latest + window, now + 120)
+        if activity_builder.shows_countdown(session.episode, device.configuration):
+            stale_at = min(stale_at, session.episode.ends_at)
+        return stale_at
 
-    # --- silent refresh ---------------------------------------------------
+    # --- keeping the app in step ------------------------------------------
 
-    async def _maybe_refresh(self, device: Device, state: dict[str, Any], now: float) -> bool:
-        """Occasionally ask the app to sync, so its own local safety net stays armed.
+    async def _maybe_refresh(
+        self,
+        device: Device,
+        state: dict[str, Any],
+        now: float,
+        paired: bool = False,
+        session: Optional[Session] = None,
+    ) -> bool:
+        """Ask the app to sync.
 
-        Rationed rather than sent every tick. iOS budgets background pushes per
-        app per day and starts dropping them silently once an app is spending
-        too many, and the ones worth having are the ones that keep the app's
-        local staleness alert re-armed — not a wake every five minutes to
+        Two rates, for two different jobs.
+
+        **Paired with an activity push** (`paired=True`), this is the only way
+        the app's own data moves with the card. A Live Activity push runs no app
+        code — iOS renders it in the widget extension and the app never hears
+        about it — so without this the Lock Screen would be current while the
+        app behind it showed whatever it had when it was last opened.
+
+        **On its own**, it is rationed hard. iOS budgets background pushes per
+        app per day and drops them silently once an app spends too many, and the
+        ones worth having when nothing is on screen are the ones that keep the
+        app's local staleness alert re-armed — not a wake every five minutes to
         re-read a number the service already knows.
+
+        Either way it is best-effort, and nothing depends on one arriving.
         """
-        interval = self._config.refresh_push_interval
-        if interval <= 0 or not device.apns_token:
+        if not device.apns_token:
             return False
+
+        if paired:
+            interval: float = PAIRED_REFRESH_MIN_GAP
+        else:
+            interval = self._config.refresh_push_interval
+            if interval <= 0:
+                return False
+
         last = float(state.get("lastRefreshAt") or 0)
         if now - last < interval:
             return False
 
+        envelope: dict[str, Any] = {
+            "schema": 1,
+            "purpose": "refresh",
+            "id": f"refresh.{int(now)}" if paired else f"refresh.{int(now // max(interval, 1))}",
+            "sentAt": now,
+        }
+        if session is not None:
+            envelope["sessionID"] = session.id
+            envelope["episodeKind"] = session.episode.kind.value
+
         push = await self._apns.send_background(
             token=device.apns_token,
             production=device.is_production,
-            envelope={
-                "schema": 1,
-                "purpose": "refresh",
-                "id": f"refresh.{int(now // interval)}",
-                "sentAt": now,
-            },
+            envelope=envelope,
         )
-        await self._store.record_push(device.device_id, "refresh", push.status, push.reason)
+        await self._store.record_push(
+            device.device_id, "refresh.paired" if paired else "refresh", push.status, push.reason
+        )
         if push.token_is_dead:
             await self._store.clear_token(device.device_id, "apnsToken")
         return push.ok
-
-    async def _service_manual(
-        self,
-        manual: ManualEpisode,
-        decision: Decision,
-        device: Device,
-        readings: list[Reading],
-        prediction: list[Reading],
-        cob: Optional[float],
-        iob: Optional[float],
-        now: float,
-        result: TickResult,
-        state: dict[str, Any],
-    ) -> Optional[ManualEpisode]:
-        """Keep a manually started card current, and take it away on time.
-
-        Returns the episode to carry forward, or ``None`` once it is over — in
-        which case the caller runs the ordinary automatic path, so a real
-        episode can start in the same tick the manual one stood down.
-        """
-        episode = manual.episode
-
-        # A real episode takes the Lock Screen back immediately. A card someone
-        # asked for should never be the reason a hypo warning has nowhere to go,
-        # and there is only ever one activity.
-        if decision.action in ("start", "replace"):
-            logger.info(
-                "manual: %s ending %s — the rules want a real episode",
-                device.device_id,
-                episode.identifier,
-            )
-            await self._end_activity(
-                device, episode, EndReason.SUPERSEDED, readings, prediction, cob, iob, now, result
-            )
-            return None
-
-        if now >= manual.expires_at:
-            logger.info("manual: %s expired %s", device.device_id, episode.identifier)
-            await self._end_activity(
-                device,
-                episode,
-                EndReason.EXPIRED,
-                readings,
-                prediction,
-                cob,
-                iob,
-                now,
-                result,
-                # The stock `expired` copy is "Still going" — right for an
-                # automatic episode cut off at the four-hour ceiling while the
-                # situation continues, and wrong here. Nothing is still going;
-                # the card ran out, which is what it was asked to do.
-                farewell=("Finished", "The Live Activity you started has run out."),
-            )
-            return None
-
-        # The card exists but the phone never came back with its token — same
-        # recovery as an automatic episode, and the same bounded retry.
-        if self._should_retry_start(device, episode, state, now):
-            started = await self._start_activity(
-                episode,
-                device,
-                readings,
-                prediction,
-                cob,
-                iob,
-                now,
-                result,
-                state=state,
-                stale_at=manual.expires_at,
-            )
-            return manual.with_episode(started or episode)
-
-        advanced = episode.advanced()
-        pushed = await self._update_activity(
-            device, advanced, readings, prediction, cob, iob, now, result
-        )
-        # A failed push leaves the sequence where it was, so the next attempt
-        # does not skip a number the phone would then treat as its floor.
-        return manual.with_episode(advanced if pushed else episode)
 
     # --- manual start -----------------------------------------------------
 
@@ -800,26 +836,19 @@ class NotifierService:
         duration_seconds: Optional[float] = None,
         now: Optional[float] = None,
     ) -> ManualStartResult:
-        """Start a Live Activity on demand, outside the episode rules.
+        """Start a card on demand, outside the rules.
 
-        Everything else in this service starts an activity because glucose said
-        so. This starts one because a person asked, which is what you want when
-        the question is "does push-to-start work on this phone" and the honest
-        alternative is waiting for a hypo.
+        Everything else in this service starts a card because glucose said so.
+        This starts one because a person asked, which is both a feature in its
+        own right and the only way to answer "does push-to-start work on this
+        phone" without waiting for a low.
 
-        The card it starts is a real one: recorded as a `ManualEpisode`, kept
-        current by every tick like any other, and ended on its own clock when
-        the requested duration runs out.
-
-        It is kept *apart* from the automatic episode rather than written into
-        `state["episode"]`, because those rules would end it almost at once — a
-        meal card with no carbohydrate behind it is "settled" fifteen minutes in
-        by every measure `episodes.evaluate` has, and it would be right. The
-        card is not there because of a meal. It is there because someone asked.
-
-        What it does not get is priority: the moment the rules say a real
-        episode has begun, the manual card stands down and the real one takes
-        the Lock Screen, in the same tick.
+        The card it starts is an ordinary one: a session holding a `manual`
+        episode, refreshed by every tick on the manual cadence, and ended on its
+        own clock when the duration runs out. What it does *not* get is
+        priority — the moment the rules say something real is happening, the
+        manual episode is suspended and the card changes to it, in place, and
+        comes back afterwards if it has time left.
         """
         now = time.time() if now is None else now
 
@@ -851,21 +880,20 @@ class NotifierService:
                 "Notifications › Live Activity and try again.",
             )
 
-        duration = self._manual_duration(duration_seconds)
+        duration = self._manual_duration(duration_seconds, device)
         if duration is None:
             return ManualStartResult(400, "durationSeconds must be a positive number of seconds.")
 
         state = await self._store.get_state(device_id)
-        running = Episode.from_dict(state.get("episode"))
+        running = Session.from_dict(state.get("session"))
         if running is not None:
-            # There is only one activity, and the one describing an actual hypo
-            # or an actual meal outranks a card someone asked for. `POST
-            # /test` is the way to provoke a push at a moment like this.
+            # There is one card, and the one describing something that is
+            # actually happening outranks a card someone asked for.
             return ManualStartResult(
                 409,
-                f"A {running.kind.value} episode is already running and owns the Lock Screen. "
+                f"A {running.episode.kind.value} card is already on the Lock Screen. "
                 "Use POST /v1/devices/{id}/test to send it an update instead.",
-                {"episodeID": running.identifier, "episodeKind": running.kind.value},
+                {"sessionID": running.id, "episodeKind": running.episode.kind.value},
             )
 
         # A Live Activity with no glucose on it is not worth starting, and
@@ -887,20 +915,12 @@ class NotifierService:
                 "would be nothing on the card.",
             )
 
-        # Kind from the newest reading. A hypo card during an actual hypo says
-        # something true; the rest of the time the meal card is the neutral one,
-        # and it is the one that does not claim an emergency.
-        latest = readings[-1]
-        kind = (
-            EpisodeKind.HYPO_RISK
-            if latest.mgdl < device.configuration.low
-            else EpisodeKind.CARB_RISE
-        )
-        episode = Episode(kind, started_at=now).advanced()
+        episode = Episode(kind=EpisodeKind.MANUAL, started_at=now, ends_at=now + duration)
+        session = Session(id=Session.identifier(now), started_at=now, sequence=1, episode=episode)
 
         prediction = momentum_forecast(readings, now, device.configuration.prediction_horizon)
         content = self._build_state(
-            episode,
+            session,
             device,
             readings,
             prediction,
@@ -911,34 +931,28 @@ class NotifierService:
         if content is None:
             return ManualStartResult(503, "Could not build a content state from the current data.")
 
-        expires_at = now + duration
         push = await self._apns.send_live_activity(
             token=device.push_to_start_token,
             production=device.is_production,
             event="start",
             content_state=content,
             attributes_type=activity_builder.ATTRIBUTES_TYPE,
-            attributes=activity_builder.attributes_for(episode),
+            attributes=activity_builder.attributes_for(session),
             # Dim the card when the request runs out, not when the reading goes
             # stale: the tick keeps the reading fresh, and the expiry is the
             # thing the caller actually chose.
-            stale_at=expires_at,
-            # Required, like every start. This path had no alert whatsoever,
-            # which is why a requested card was accepted by APNs with a 200 and
-            # then never appeared — and why the very next tick reported that
-            # the phone had not registered an activity token for an episode
-            # whose activity had never been created.
-            alert=self._start_alert(content, kind),
-            relevance_score=100 if kind is EpisodeKind.HYPO_RISK else 50,
+            stale_at=episode.ends_at,
+            # Required, like every start: a start push without an alert is
+            # accepted by APNs with a 200 and then silently discarded.
+            alert=self._alert_for(content, EpisodeKind.MANUAL),
+            relevance_score=50,
             timestamp=now,
         )
-        await self._store.record_push(
-            device_id, f"request-start.{kind.value}", push.status, push.reason
-        )
+        await self._store.record_push(device_id, "request-start.manual", push.status, push.reason)
         logger.info(
             "request-start: %s %s for %ds -> %s %s",
             device_id,
-            episode.identifier,
+            session.id,
             int(duration),
             push.status,
             push.reason or "ok",
@@ -959,25 +973,23 @@ class NotifierService:
                 {"apnsStatus": push.status, "apnsReason": push.reason, "apnsID": push.apns_id},
             )
 
-        # Recorded only now that APNs has taken it: an episode written before
-        # a refused push would leave the tick updating a card that does not
-        # exist, which is the failure this whole area keeps producing.
-        state["manual"] = ManualEpisode(episode=episode, expires_at=expires_at).to_dict()
-        # Share the start ledger with the automatic path, so the same bounded
-        # retry covers a manual card the phone never came back about.
-        state["activityStart"] = {"episode": episode.identifier, "at": now, "attempts": 1}
+        # Recorded only now that APNs has taken it: a session written before a
+        # refused push would leave the tick updating a card that does not exist.
+        state["session"] = session.to_dict()
+        state["activityStart"] = {"session": session.id, "at": now, "attempts": 1}
+        state["lastActivityPushAt"] = now
         await self._store.put_state(device_id, state)
 
         return ManualStartResult(
             200,
-            "Push-to-start accepted by APNs. The activity appears once iOS creates it, Gloo "
-            "registers its update token, and the service keeps it current until it expires.",
+            "Push-to-start accepted by APNs. The card appears once iOS creates it, Gloo registers "
+            "its update token, and the service keeps it current until it expires.",
             {
-                "episodeID": episode.identifier,
-                "episodeKind": kind.value,
+                "sessionID": session.id,
+                "episodeKind": EpisodeKind.MANUAL.value,
                 "durationSeconds": duration,
-                "expiresAt": expires_at,
-                "staleAt": expires_at,
+                "expiresAt": episode.ends_at,
+                "staleAt": episode.ends_at,
                 "environment": device.environment,
                 "apnsStatus": push.status,
                 "apnsID": push.apns_id,
@@ -985,7 +997,7 @@ class NotifierService:
         )
 
     @staticmethod
-    def _manual_duration(requested: Optional[float]) -> Optional[float]:
+    def _manual_duration(requested: Optional[float], device: Device) -> Optional[float]:
         """Clamp, or reject outright.
 
         Clamping rather than refusing an out-of-range value: asking for twelve
@@ -993,7 +1005,7 @@ class NotifierService:
         answer, whereas asking for "soon" is not a duration at all.
         """
         if requested is None:
-            return MANUAL_START_DEFAULT_DURATION
+            return device.configuration.manual.duration
         try:
             value = float(requested)
         except (TypeError, ValueError):
@@ -1002,13 +1014,63 @@ class NotifierService:
             return None
         return min(max(value, MANUAL_START_MIN_DURATION), MANUAL_START_MAX_DURATION)
 
+    # --- the user swiped it away ------------------------------------------
+
+    async def dismiss(
+        self,
+        device_id: str,
+        session_id: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Forget the card the user has just swiped away.
+
+        Without this the service would keep an ended activity in its head, find
+        no token to update, and — because a session with no activity looks
+        exactly like a start push that never arrived — helpfully push a start
+        again. Dismissing a card and having it reappear twice is worse than the
+        card never having existed.
+
+        The kind's restart cooldown is stamped as if it had ended normally, so
+        the rules cannot immediately re-derive the same card from the same
+        glucose.
+        """
+        now = time.time() if now is None else now
+        state = await self._store.get_state(device_id)
+        session = Session.from_dict(state.get("session"))
+
+        if session is None:
+            return {"status": "ok", "detail": "No card was running for this device."}
+        if session_id and session_id != session.id:
+            # A dismissal that arrives after the card it refers to has already
+            # been replaced must not take down its successor.
+            return {
+                "status": "ignored",
+                "detail": f"This device is running {session.id}, not {session_id}.",
+            }
+
+        last_ended = _epoch_map(state.get("lastEnded"), EpisodeKind)
+        last_ended[session.episode.kind] = now
+        state["lastEnded"] = {kind.value: at for kind, at in last_ended.items()}
+        state["session"] = None
+        state.pop("activityStart", None)
+        await self._store.put_state(device_id, state)
+        await self._store.record_push(device_id, f"activity.dismissed.{session.episode.kind.value}", 0, "by the user")
+        logger.info("dismiss: %s gave up %s (%s)", device_id, session.id, session.episode.kind.value)
+
+        return {
+            "status": "ok",
+            "detail": "Card forgotten.",
+            "sessionID": session.id,
+            "episodeKind": session.episode.kind.value,
+        }
+
     # --- diagnostics ------------------------------------------------------
 
     async def send_test(self, device_id: str, now: Optional[float] = None) -> dict[str, Any]:
         """Push a test alert, and a test Live Activity update if one is running.
 
         The problem this solves: every other way of answering "does a push from
-        this service actually reach that phone" involves waiting for a hypo.
+        this service actually reach that phone" involves waiting for a low.
         APNs returning 200 does not answer it — the payload can still be
         dropped on the device, silently, for half a dozen reasons — so the only
         real test is to send one and have a person look at the screen.
@@ -1025,7 +1087,7 @@ class NotifierService:
             "environment": device.environment,
             "hasAPNsToken": bool(device.apns_token),
             "hasPushToStartToken": bool(device.push_to_start_token),
-            "activityEpisodeID": device.activity_episode_id,
+            "activitySessionID": device.activity_session_id,
         }
 
         if device.apns_token:
@@ -1046,13 +1108,13 @@ class NotifierService:
         else:
             report["alert"] = {"skipped": "no apnsToken registered"}
 
-        # An update, not a start: a test that started a real Live Activity would
-        # put a hypo card on someone's Lock Screen for a situation that is not
+        # An update, not a start: a test that started a real card would put a
+        # low warning on someone's Lock Screen for a situation that is not
         # happening.
         state = await self._store.get_state(device_id)
-        episode = Episode.from_dict(state.get("episode"))
-        if device.activity_token and episode and device.activity_episode_id == episode.identifier:
-            content = self._build_state(episode.advanced(), device, [], [], None, None, now)
+        session = Session.from_dict(state.get("session"))
+        if device.activity_token and session and device.activity_session_id == session.id:
+            content = self._build_state(session.advanced(), device, [], [], None, None, now)
             if content is None:
                 report["liveActivity"] = {"skipped": "no readings to build a state from"}
             else:

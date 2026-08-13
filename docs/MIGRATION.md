@@ -1,3 +1,44 @@
+# Migrating
+
+Two migrations live here. **If you are already running `nsnotifier`** — the
+long-running service, with `APNS_AUTH_KEY` in the environment — you want
+[§0a](#0a-upgrading-an-existing-nsnotifier-deployment) and nothing else: no
+secret moves, no variable is renamed, and the deploy is the whole job.
+
+The rest of the page is the older migration, from the original `script.py` that
+fetched a `.p8` over HTTP before every push.
+
+---
+
+## 0a. Upgrading an existing nsnotifier deployment
+
+**Nothing about your configuration changes.** `APNS_AUTH_KEY` (or
+`APNS_AUTH_KEY_PATH`), `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`,
+`NIGHTSCOUT_URL`, `NIGHTSCOUT_TOKEN`, `RELAY_SHARED_SECRET`, `DATABASE_PATH`,
+`HEARTBEAT_URL` — all keep their names and their values. Redeploy the image and
+the running secrets carry over untouched. Nothing needs to be re-pasted, and the
+`.p8` never has to be handled again.
+
+Two things do change, and both settle by themselves:
+
+* **`POLL_INTERVAL_SECONDS` now defaults to 60** rather than 120. The tick is no
+  longer what decides when a push goes out — each episode kind sets its own
+  cadence — so the interval now governs how quickly the service *notices* a low
+  or a meal. If you set the variable explicitly, lower it to 60; if you did not,
+  there is nothing to do.
+* **The per-device working state has a new shape.** The row that used to hold
+  `episode` and `manual` now holds a single `session`. Old rows are simply not
+  read: the service starts the next tick believing no card is running, which is
+  true within a minute of the deploy anyway. Alert cooldowns (`lastFired`) are
+  untouched, so a redeploy still cannot re-announce a low you are treating.
+
+If a Live Activity happens to be on the Lock Screen across the upgrade, it is
+from the previous wire format and cannot be addressed by the new one. The app
+build ends any such card on its first launch; if the phone is not opened, iOS
+expires it on its own. Nothing has to be done about it.
+
+---
+
 # Migrating from the old script
 
 You are running `script.py` against a previous version of Gloo. This is what
@@ -67,8 +108,8 @@ a day.
 | `DATABASE_PATH` | **new** | Defaults to `/data/nsnotifier.sqlite3`. **Must be on a persistent volume** — see §5. |
 | `PERSISTENT_STORAGE_URL`, `PERSISTENT_STORAGE_USERNAME`, `PERSISTENT_STORAGE_PW` | **delete** | Replaced by SQLite. |
 | `DEVICE_TOKENS` | **delete** | Replaced by registration. |
-| `POLL_INTERVAL_SECONDS` | new, optional | Default 120. Only used by `serve`/`worker`. Two minutes rather than five so a running Live Activity stays current. |
-| `REFRESH_PUSH_INTERVAL_SECONDS` | new, optional | Default 1800. How often, at most, to send a device a silent "go and sync" push. 0 disables. |
+| `POLL_INTERVAL_SECONDS` | new, optional | Default 60. Only used by `serve`/`worker`. How quickly the service notices; each episode kind sets its own push cadence. |
+| `REFRESH_PUSH_INTERVAL_SECONDS` | new, optional | Default 1800. Silent "go and sync" pushes while nothing is on the Lock Screen. 0 disables. While a card runs, one is paired with every activity push regardless. |
 | `HEARTBEAT_URL` | new, optional | Strongly recommended. See §6. |
 | `PORT` | new, optional | Default 8080. The registration API. |
 
@@ -153,16 +194,26 @@ the app is not running at all. That is what push-to-start tokens are for, and it
 is not something the app can do for itself — ActivityKit refuses a local start
 from the background and offers no way to queue one.
 
-Two situations get one, and both clear themselves:
+There is exactly one card — a **session** — and four reasons for it to exist:
 
-* **Heading low** — glucose below the low threshold, or the momentum forecast
-  crossing it within half an hour. Clears when glucose is back in range with a
-  10 mg/dL margin and no longer falling.
-* **Carbs on board** — 30 g or more logged in the last half hour. Clears when
-  glucose is back in range and nothing more is landing.
+* **Low glucose** — under the suspend threshold + 10 (80 mg/dL by default).
+  Clears once glucose has been above threshold + 15 for a quarter of an hour.
+  Refreshed every 2 minutes.
+* **Moving fast** — ±3 mg/dL/min in the same direction for 15 minutes. Clears
+  after 15 minutes under 1 mg/dL/min. Refreshed every 2 minutes falling, 5
+  rising: a fast fall is the one worth watching closely.
+* **After a meal** — 30 g or more of carbohydrate logged inside 20 minutes.
+  Ends after 3 hours, or early once glucose has been steady and in range for
+  half an hour. Refreshed every 5 minutes.
+* **Manual** — the button in the app. Two hours, and nothing about glucose ends
+  it. Refreshed every 5 minutes.
 
-Nothing else. See `docs/ARCHITECTURE.md` in the app repo for the full rule set,
-and `nsnotifier/episodes.py` for the implementation — which mirrors
+The card **switches between them in place**: going low during a meal is one
+update push, not an end and a new start, and the meal comes back afterwards if
+it still has time. Every push also carries a silent sync alongside it, so the
+app's own data keeps step with the Lock Screen.
+
+See `nsnotifier/episodes.py` for the implementation — which mirrors
 `GlucoseEpisode.swift` line for line, with `tests/test_episodes.py` mirroring
 `GlucoseEpisodeTests.swift` case for case.
 

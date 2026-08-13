@@ -21,8 +21,28 @@ needs Apple's Critical Alerts entitlement. Keep your CGM app's own alarms on.
 | | When | How |
 | --- | --- | --- |
 | **Alerts** | Low, high, predicted low, no data — four kinds, each damped for 30 minutes after it fires | Visible `time-sensitive` push |
-| **Live Activity** | A hypo (measured or forecast), or 30 g+ of carbohydrate in half an hour. Both clear when glucose is back in range. Also on request, via `request-start` | Push-to-start, then an update every 2 minutes, then end |
-| **Silent refresh** | At most every 30 minutes | `content-available`, so the app syncs and re-arms its own local alerts |
+| **Live Activity** | One card, four reasons for it to exist — see below. Push-to-start once, updates at the cadence the current reason asks for, end once | Push-to-start, updates, end |
+| **Silent refresh** | Alongside every Live Activity push, and at most every 30 minutes otherwise | `content-available`, so the app syncs and re-arms its own local alerts |
+
+### One card, four reasons
+
+There is never more than one Live Activity. It is called a **session**, it is
+started once and ended once, and the *reason* it is on screen — an **episode** —
+can change underneath it without the card going anywhere:
+
+| Episode | Starts | Ends | Refreshed |
+| --- | --- | --- | --- |
+| **Low glucose** | Below the suspend threshold + 10 (80 mg/dL by default) | Above threshold + 15 for 15 minutes | every 2 min |
+| **Moving fast** | ±3 mg/dL/min in one direction for 15 minutes | Under 1 mg/dL/min for 15 minutes | every 2 min falling, 5 rising |
+| **After a meal** | 30 g or more of carbohydrate logged inside 20 minutes | 3 hours, or 30 minutes steady and in range | every 5 min |
+| **Manual** | `POST /v1/devices/{id}/request-start`, i.e. the button in the app | 2 hours | every 5 min |
+
+When a more urgent episode applies, the card **switches in place** — one update
+push, no end, no push-to-start, no gap on the Lock Screen — and the displaced
+episode waits: a manual card interrupted by a low comes back for the rest of its
+two hours when the low clears. That is the whole reason the episode kind lives
+in the content state rather than in the activity's attributes, which ActivityKit
+freezes at creation.
 
 The rules live in `nsnotifier/episodes.py` and `nsnotifier/alerts.py`, both of
 which are pure functions and both of which **mirror Swift files in the app's
@@ -34,7 +54,7 @@ Activity appears or disappears depending on whether the app happened to be open.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest          # 87 tests, no network, ~2s
+.venv/bin/python -m pytest          # 154 tests, no network, ~4s
 ```
 
 ```bash
@@ -72,8 +92,8 @@ web-hosted `.p8` both have to go.
 | `APNS_AUTH_KEY_PATH` | | | Alternative, if secrets are mounted as files |
 | `RELAY_SHARED_SECRET` | ✔ | | Bearer token the app presents; also goes in the app |
 | `DATABASE_PATH` | | `/data/nsnotifier.sqlite3` | **Put it on a volume** |
-| `POLL_INTERVAL_SECONDS` | | `120` | `serve`/`worker` only. Two minutes, so a running Live Activity is never far behind |
-| `REFRESH_PUSH_INTERVAL_SECONDS` | | `1800` | `0` disables silent pushes |
+| `POLL_INTERVAL_SECONDS` | | `60` | `serve`/`worker` only. How fast the service *notices*; each episode's own cadence decides when it pushes |
+| `REFRESH_PUSH_INTERVAL_SECONDS` | | `1800` | Silent pushes while nothing is on screen. `0` disables. While a card is running, one is paired with every activity push regardless |
 | `REGISTRATION_TTL_HOURS` | | `72` | Devices quieter than this stop being pushed to |
 | `HEARTBEAT_URL` | | | Dead-man's switch. Strongly recommended |
 | `PORT` / `HOST` | | `8080` / `0.0.0.0` | |
@@ -106,51 +126,64 @@ answer, and what is actually unreliable about a cron job.
 | `DELETE /v1/devices/{id}` | bearer | Take a device off |
 | `POST /v1/tick` | bearer | Run one cycle now |
 | `POST /v1/devices/{id}/test` | bearer | Send a test alert now, and a test Live Activity update if one is running |
-| `POST /v1/devices/{id}/request-start` | bearer | Start a Live Activity now, outside the episode rules |
+| `POST /v1/devices/{id}/request-start` | bearer | Start a Live Activity now, outside the rules |
+| `POST /v1/devices/{id}/dismiss` | bearer | The user swiped the card away; stop keeping it alive |
 | `GET /v1/diagnostics` | bearer | Registered devices and every push of the last seven days, with Apple's reason for each |
 
 ### `POST /v1/devices/{id}/request-start`
 
 ```bash
-curl -X-POST -H "Authorization: Bearer $RELAY_SHARED_SECRET" \
+curl -X POST -H "Authorization: Bearer $RELAY_SHARED_SECRET" \
      -H 'Content-Type: application/json' -d '{"durationSeconds": 7200}' \
      https://your-service/v1/devices/$DEVICE_ID/request-start
 ```
 
 Everything else here starts a Live Activity because glucose said so. This starts
-one because a person asked — which is the only way to answer "does push-to-start
-reach this phone" without waiting for a hypo.
+one because a person asked — both a feature in its own right and the only way to
+answer "does push-to-start reach this phone" without waiting for a low.
 
-`durationSeconds` is optional (default two hours) and clamped to between five
-minutes and eight hours, because iOS ends an activity at eight whatever anyone
-asks for. The kind is chosen from the newest reading: a hypo card during an
-actual hypo, otherwise the meal card, which is the one that does not claim an
-emergency.
+`durationSeconds` is optional (default two hours, from the device's own settings)
+and clamped to between five minutes and eight hours, because iOS ends an activity
+at eight whatever anyone asks for.
 
-The card it starts is a real one: recorded as a manual episode, refreshed by
-every tick with current glucose exactly like an automatic one, and **ended on its
-own clock** when the duration runs out.
+The card it starts is an ordinary session holding a `manual` episode: refreshed
+by every tick on the manual cadence, and **ended on its own clock** when the
+duration runs out. Unlike every other episode, nothing about glucose ends it —
+the user asked for two hours of card, and giving them twenty minutes because
+glucose looked tidy is not answering the request.
 
-It is kept apart from the automatic episode rather than written into the same
-slot, because the episode rules would end it almost at once — a meal card with no
-carbohydrate behind it is "settled" fifteen minutes in by every measure
-`episodes.evaluate` has, and it would be right. The card is not there because of
-a meal; it is there because someone asked.
-
-What it does not get is priority. The moment the rules say a real episode has
-begun, the manual card stands down and the real one takes the Lock Screen, in the
-same tick — a card someone asked for should never be the reason a hypo warning
-has nowhere to go. For the same reason a request is refused with `409` while a
-real episode is already running; `POST /test` is the right tool at that moment.
+What it does not get is priority. The moment the rules say something real is
+happening the card **changes to it in place**, and the manual episode waits its
+turn and comes back afterwards if it has time left. A request is refused with
+`409` while a card is already running; `POST /test` is the right tool then.
 
 | | |
 | --- | --- |
-| `200` | APNs accepted the push. Body carries `episodeID`, `episodeKind`, `durationSeconds`, `expiresAt`, `apnsStatus` |
+| `200` | APNs accepted the push. Body carries `sessionID`, `episodeKind`, `durationSeconds`, `expiresAt`, `apnsStatus` |
 | `400` | No push-to-start token registered, Live Activities switched off in Gloo, or a `durationSeconds` that is not a positive number |
 | `404` | No such device |
-| `409` | A real episode is already running and owns the Lock Screen |
+| `409` | A card is already on the Lock Screen |
 | `502` | APNs refused it. Body carries `apnsStatus` and `apnsReason`; a 410 also drops the dead token |
 | `503` | Nightscout unreachable, or no recent reading to put on the card — deliberately not a 502, because that sends you somewhere else entirely |
+
+### `POST /v1/devices/{id}/dismiss`
+
+```bash
+curl -X POST -H "Authorization: Bearer $RELAY_SHARED_SECRET" \
+     -H 'Content-Type: application/json' -d '{"sessionID": "s.1770000000"}' \
+     https://your-service/v1/devices/$DEVICE_ID/dismiss
+```
+
+Sent by the app when the user swipes the card away. Without it the service keeps
+an ended activity in its head, finds no token to update, and — because a session
+with no activity looks exactly like a start push that never arrived — pushes a
+start again. A card that comes back after being dismissed is worse than one that
+never appeared.
+
+`sessionID` is optional but worth sending: a dismissal that arrives after the
+card it refers to has been replaced answers `{"status": "ignored"}` rather than
+taking down its successor. Dismissing stamps the episode kind's restart cooldown,
+so the same glucose cannot immediately re-derive the same card.
 
 ## Layout
 
@@ -160,7 +193,7 @@ nsnotifier/
   models.py       the vocabulary shared with the phone — field names are the wire format
   nightscout.py   entries and treatments, in UTC, without interpolating over gaps
   physiology.py   IOB, COB, and a deliberately momentum-only forecast
-  episodes.py     when a Live Activity should exist   ←→ GlucoseEpisode.swift
+  episodes.py     what the one card should be about  ←→ GlucoseEpisode.swift
   alerts.py       when to interrupt someone           ←→ GlucoseAlert.swift
   activity.py     the Live Activity content state     ←→ GlucoseActivityAttributes.swift
   apns.py         provider tokens, push types, hosts, and pruning dead tokens
@@ -188,8 +221,8 @@ nsnotifier/
   `NSSupportsLiveActivitiesFrequentUpdates`. Gloo does; anything else consuming
   this service would have to.
 * **An update is only sent to a token the phone has vouched for.** The service
-  pushes when `activityToken` is present *and* `activityEpisodeID` matches the
-  episode it believes is running, and skips otherwise. That is deliberate — the
+  pushes when `activityToken` is present *and* `activitySessionID` matches the
+  card it believes is running, and skips otherwise. That is deliberate — the
   alternative is pushing to a token that may address an activity that ended —
   but it means a phone that loses track of the pairing produces a frozen Lock
   Screen and a *correctly* skipped push. `GlucoseActivityRegistrar.swift` in the
@@ -236,6 +269,20 @@ nsnotifier/
   push goes out.
 * **This service is the sole owner of Live Activities.** The app does not start,
   end or replace them; it discovers what the service started and reports the
-  token that addresses it. Two systems minting episode identities for the same
-  hypo is what froze Lock Screens before, because neither could push to the
-  other's activity.
+  token that addresses it. Two systems minting identities for the same card is
+  what froze Lock Screens before, because neither could push to the other's
+  activity. The one thing the app now tells the service is that the *user* ended
+  a card — `POST /dismiss` — which is not a decision, it is a fact only the
+  phone has.
+* **The kind belongs in the state, never in the attributes.** ActivityKit freezes
+  attributes at creation. Anything in them is a thing the card cannot change its
+  mind about, and this feature is largely about changing its mind — a meal card
+  that goes low becomes a low card, with the low's copy and the low's
+  two-minute cadence, on the same activity, with one push. The attributes carry
+  a session id and a start instant and nothing else.
+* **A Live Activity push runs no app code.** iOS renders it in the widget
+  extension; the app is not woken and never learns it happened. So a silent
+  `content-available` push is sent alongside every activity push — otherwise the
+  Lock Screen would be current while the app behind it showed whatever it had
+  when it was last opened. iOS budgets those and will drop them; nothing depends
+  on one arriving.

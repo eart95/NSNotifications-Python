@@ -1,10 +1,15 @@
 """Starting a Live Activity because a person asked, not because glucose did.
 
 Everything else in the service starts one on evidence. This route starts one on
-request, which makes it the only way to answer "does push-to-start reach this
-phone" without waiting for a hypo — and the only path where the caller, rather
-than the rules, decides what appears on someone's Lock Screen. So the tests are
-mostly about what it *refuses*.
+request, which makes it both a feature in its own right and the only way to
+answer "does push-to-start reach this phone" without waiting for a low — and the
+only path where the caller, rather than the rules, decides what appears on
+someone's Lock Screen. So the tests are as much about what it *refuses*.
+
+The manual card is an ordinary session holding a `manual` episode. It is not
+kept in a separate slot any more: with the session model, what used to need one
+— a card the rules would otherwise end immediately — is now just an episode
+whose exit condition is its clock.
 """
 
 from __future__ import annotations
@@ -14,20 +19,16 @@ from typing import Any
 import pytest
 
 from nsnotifier.apns import PushResult
-from nsnotifier.models import Reading, Treatment
-from nsnotifier.service import (
-    MANUAL_START_DEFAULT_DURATION,
-    MANUAL_START_MAX_DURATION,
-    MANUAL_START_MIN_DURATION,
-)
-from tests.test_service import ANCHOR, FakeNightscout, build, registration, series
+from nsnotifier.models import EpisodeConfiguration, Reading, Treatment
+from nsnotifier.service import MANUAL_START_MAX_DURATION, MANUAL_START_MIN_DURATION
+from tests.test_service import ANCHOR, FakeNightscout, build, flat, registration, series
 
 pytestmark = pytest.mark.asyncio
 
 
 async def ready(tmp_path, readings=None, **overrides):
     """A device that could host an activity, and a service that could start one."""
-    _, store, apns, service = await build(tmp_path, readings or series([120, 118, 116, 115]))
+    _, store, apns, service = await build(tmp_path, readings or flat(118))
     await store.upsert_device("device-1", registration(**overrides))
     return store, apns, service
 
@@ -43,7 +44,7 @@ def updates(apns) -> list[dict[str, Any]]:
 # --- the happy path --------------------------------------------------------
 
 
-async def test_starts_an_activity_on_request(tmp_path):
+async def test_starts_a_card_on_request(tmp_path):
     store, apns, service = await ready(tmp_path)
 
     result = await service.request_start("device-1", duration_seconds=7200, now=ANCHOR)
@@ -53,15 +54,15 @@ async def test_starts_an_activity_on_request(tmp_path):
     # The push-to-start token, not the activity one: there is no activity yet.
     assert push["token"] == "token-start"
     assert push["attributes_type"] == "GlucoseActivityAttributes"
-    assert push["attributes"]["episodeID"] == result.body["episodeID"]
+    assert push["attributes"]["sessionID"] == result.body["sessionID"]
     # The one lever a start push has over how long the card stays useful.
     assert push["stale_at"] == ANCHOR + 7200
     # ActivityKit requires an alert on a start and discards a start push
-    # without one. This route almost always picks the meal kind — a hypo card
-    # only when the user is actually hypo — so it was the path that exercised
-    # the missing alert every single time, and the reason a requested card was
-    # accepted by APNs with a 200 and then never appeared.
+    # without one — accepted by APNs with a 200, gone by the time it reaches
+    # the phone, which is exactly how a requested card used to fail.
     assert push["alert"]["title"]
+    # Quietly, though: nothing is wrong, someone just asked to watch.
+    assert "sound" not in push["alert"]
 
 
 async def test_the_response_says_enough_to_act_on(tmp_path):
@@ -69,7 +70,7 @@ async def test_the_response_says_enough_to_act_on(tmp_path):
 
     result = await service.request_start("device-1", duration_seconds=7200, now=ANCHOR)
 
-    assert result.body["episodeKind"] == "carbRise"
+    assert result.body["episodeKind"] == "manual"
     assert result.body["durationSeconds"] == 7200
     assert result.body["environment"] == "development"
     assert result.body["apnsStatus"] == 200
@@ -86,23 +87,22 @@ async def test_a_manual_start_is_recorded_in_the_audit_trail(tmp_path):
     assert any(kind.startswith("request-start.") for kind in kinds)
 
 
-# --- which card ------------------------------------------------------------
-
-
-async def test_uses_the_meal_card_when_glucose_is_unremarkable(tmp_path):
-    # The neutral one: it does not claim an emergency that is not happening.
-    store, apns, service = await ready(tmp_path, readings=series([120, 118, 116, 115]))
-    result = await service.request_start("device-1", now=ANCHOR)
-    assert result.body["episodeKind"] == "carbRise"
-
-
-async def test_uses_the_hypo_card_during_an_actual_hypo(tmp_path):
-    # If the newest reading is below the device's own low threshold, a hypo
-    # card is simply the truth, and it is the one that gets a banner.
+async def test_a_requested_card_is_always_the_manual_kind(tmp_path):
+    # Even during a low. The rules take the card over on the very next tick —
+    # in place, with the low's own copy and cadence — and that path is the one
+    # that has been thought about; guessing a kind at request time was a second
+    # way to decide the same thing.
     store, apns, service = await ready(tmp_path, readings=series([110, 95, 80, 64]))
     result = await service.request_start("device-1", now=ANCHOR)
-    assert result.body["episodeKind"] == "hypoRisk"
-    assert starts(apns)[0]["relevance_score"] == 100
+    assert result.body["episodeKind"] == "manual"
+
+    await store.upsert_device(
+        "device-1",
+        registration(activityToken="token-activity", activitySessionID=result.body["sessionID"]),
+    )
+    apns.activities.clear()
+    await service.tick(now=ANCHOR + 60)
+    assert updates(apns)[0]["content_state"]["kind"] == "low"
 
 
 async def test_the_card_carries_the_current_numbers(tmp_path):
@@ -207,16 +207,20 @@ async def test_a_nightscout_outage_is_reported_as_such(tmp_path):
 
 
 async def test_duration_defaults_and_clamps(tmp_path):
-    store, apns, service = await ready(tmp_path)
-
+    # A service apiece: the second request would otherwise be refused with a
+    # 409 by the first one's card, which is its own test further down.
+    _, _, service = await ready(tmp_path / "a")
     default = await service.request_start("device-1", now=ANCHOR)
-    assert default.body["durationSeconds"] == MANUAL_START_DEFAULT_DURATION
+    # The device's own setting, which is where the two hours actually lives.
+    assert default.body["durationSeconds"] == EpisodeConfiguration().manual.duration
 
     # Twelve hours is a reasonable thing to want; eight is the honest answer,
     # because iOS ends the activity there whatever anyone asks for.
+    _, _, service = await ready(tmp_path / "b")
     long = await service.request_start("device-1", duration_seconds=12 * 3600, now=ANCHOR)
     assert long.body["durationSeconds"] == MANUAL_START_MAX_DURATION
 
+    _, _, service = await ready(tmp_path / "c")
     short = await service.request_start("device-1", duration_seconds=30, now=ANCHOR)
     assert short.body["durationSeconds"] == MANUAL_START_MIN_DURATION
 
@@ -229,83 +233,86 @@ async def vouched(store, apns, service, at=ANCHOR):
     result = await service.request_start("device-1", duration_seconds=7200, now=at)
     await store.upsert_device(
         "device-1",
-        registration(activityToken="token-activity", activityEpisodeID=result.body["episodeID"]),
+        registration(activityToken="token-activity", activitySessionID=result.body["sessionID"]),
     )
     apns.activities.clear()
-    return result.body["episodeID"]
+    return result.body["sessionID"]
 
 
-async def test_the_episode_is_recorded_so_the_tick_can_keep_it(tmp_path):
+async def test_the_session_is_recorded_so_the_tick_can_keep_it(tmp_path):
     store, apns, service = await ready(tmp_path)
     result = await service.request_start("device-1", duration_seconds=7200, now=ANCHOR)
 
-    manual = (await store.get_state("device-1"))["manual"]
-    assert manual["episode"]["kind"] == "carbRise"
-    assert manual["expiresAt"] == ANCHOR + 7200
-    # Kept apart from the automatic episode, whose rules would end this one
-    # fifteen minutes in for the entirely correct reason that no meal is
-    # happening.
-    assert (await store.get_state("device-1")).get("episode") is None
+    session = (await store.get_state("device-1"))["session"]
+    assert session["episode"]["kind"] == "manual"
+    assert session["episode"]["endsAt"] == ANCHOR + 7200
     assert result.body["expiresAt"] == ANCHOR + 7200
 
 
 async def test_the_tick_keeps_a_manual_card_current(tmp_path):
     store, apns, service = await ready(tmp_path)
-    episode_id = await vouched(store, apns, service)
+    session_id = await vouched(store, apns, service)
 
-    for offset in (120, 240, 360):
-        service._nightscout = FakeNightscout(series([118, 120, 123, 126], ending_at=ANCHOR + offset))
+    for offset in (300, 600, 900):
+        service._nightscout = FakeNightscout(flat(118 + offset / 300, ending_at=ANCHOR + offset))
         await service.tick(now=ANCHOR + offset)
 
     sent = updates(apns)
+    # Five-minute cadence, so one push per five minutes and no more.
     assert len(sent) == 3
-    assert all(push["collapse_id"] == episode_id for push in sent)
-    # Fresh numbers each time, and a sequence the phone will accept.
+    assert all(push["collapse_id"] == session_id for push in sent)
     sequences = [push["content_state"]["sequence"] for push in sent]
     assert sequences == sorted(sequences) and len(set(sequences)) == 3
-    assert sent[-1]["content_state"]["mgdL"] == 126
+    assert sent[-1]["content_state"]["mgdL"] == 121
 
 
 async def test_a_manual_card_ends_itself_when_the_time_is_up(tmp_path):
     store, apns, service = await ready(tmp_path)
     await vouched(store, apns, service)
 
+    service._nightscout = FakeNightscout(flat(118, ending_at=ANCHOR + 3600))
     await service.tick(now=ANCHOR + 3600)
     assert [push["event"] for push in apns.activities] == ["update"]
 
     apns.activities.clear()
+    service._nightscout = FakeNightscout(flat(118, ending_at=ANCHOR + 7200))
     await service.tick(now=ANCHOR + 7200 + 1)
 
     ended = next(push for push in apns.activities if push["event"] == "end")
-    # Not the automatic "Still going", which describes an episode cut off at the
+    # Not the automatic "Still going", which describes an episode cut off at its
     # ceiling while the situation continues. Nothing is still going here.
     assert ended["content_state"]["headline"] == "Finished"
-    assert (await store.get_state("device-1")).get("manual") is None
+    assert (await store.get_state("device-1")).get("session") is None
 
 
-async def test_a_real_episode_takes_the_lock_screen_back(tmp_path):
-    # A card someone asked for must never be the reason a hypo warning has
-    # nowhere to go. Both halves happen in the same tick.
+async def test_a_low_takes_the_card_over_without_taking_it_away(tmp_path):
+    # A card someone asked for must never be the reason a low warning has
+    # nowhere to go — and it must not be torn down to make room either.
     store, apns, service = await ready(tmp_path)
-    manual_episode = await vouched(store, apns, service)
+    session_id = await vouched(store, apns, service)
 
     service._nightscout = FakeNightscout(series([110, 95, 80, 64], ending_at=ANCHOR + 300))
     await service.tick(now=ANCHOR + 300)
 
-    assert [push["event"] for push in apns.activities] == ["end", "start"]
-    assert starts(apns)[0]["attributes"]["episodeKind"] == "hypoRisk"
-    assert starts(apns)[0]["attributes"]["episodeID"] != manual_episode
-    assert (await store.get_state("device-1")).get("manual") is None
+    assert [push["event"] for push in apns.activities] == ["update"]
+    update = updates(apns)[0]
+    assert update["content_state"]["kind"] == "low"
+    assert update["collapse_id"] == session_id
+
+    session = (await store.get_state("device-1"))["session"]
+    # The manual episode is waiting, not gone: it comes back for the rest of
+    # its two hours once the low clears.
+    assert [item["kind"] for item in session["suspended"]] == ["manual"]
 
 
-async def test_a_manual_request_is_refused_while_a_real_episode_runs(tmp_path):
+async def test_a_manual_request_is_refused_while_a_card_is_running(tmp_path):
     store, apns, service = await ready(tmp_path, readings=series([110, 95, 80, 64]))
     await service.tick(now=ANCHOR)
     apns.activities.clear()
 
     result = await service.request_start("device-1", now=ANCHOR + 120)
     assert result.status == 409
-    assert result.body["episodeKind"] == "hypoRisk"
+    assert result.body["episodeKind"] == "low"
     # And it points at the thing that *is* the right tool at that moment.
     assert "/test" in result.detail
     assert apns.activities == []
@@ -313,23 +320,25 @@ async def test_a_manual_request_is_refused_while_a_real_episode_runs(tmp_path):
 
 async def test_turning_live_activities_off_takes_a_manual_card_down_too(tmp_path):
     store, apns, service = await ready(tmp_path)
-    await vouched(store, apns, service)
+    session_id = await vouched(store, apns, service)
 
     await store.upsert_device(
         "device-1",
         registration(
-            activityToken="token-activity", activityEpisodeID="x", liveActivitiesEnabled=False
+            activityToken="token-activity",
+            activitySessionID=session_id,
+            liveActivitiesEnabled=False,
         ),
     )
     await service.tick(now=ANCHOR + 120)
 
-    assert (await store.get_state("device-1")).get("manual") is None
+    assert (await store.get_state("device-1")).get("session") is None
 
 
 async def test_a_manual_card_the_phone_never_registered_is_restarted(tmp_path):
-    # Same recovery as an automatic episode: a 200 to a start push is not a
-    # Live Activity, and the only evidence that one exists is the phone
-    # registering a token against this episode.
+    # Same recovery as an automatic card: a 200 to a start push is not a Live
+    # Activity, and the only evidence that one exists is the phone registering
+    # a token against this session.
     store, apns, service = await ready(tmp_path)
     await service.request_start("device-1", duration_seconds=7200, now=ANCHOR)
     apns.activities.clear()
@@ -342,10 +351,10 @@ async def test_a_manual_card_the_phone_never_registered_is_restarted(tmp_path):
 
 
 async def test_nothing_is_recorded_when_apns_refuses_the_start(tmp_path):
-    # An episode written before a refused push would leave the tick updating a
+    # A session written before a refused push would leave the tick updating a
     # card that does not exist.
     store, apns, service = await ready(tmp_path)
     apns.activity_result = PushResult(status=403, reason="ExpiredProviderToken")
 
     await service.request_start("device-1", now=ANCHOR)
-    assert (await store.get_state("device-1")).get("manual") is None
+    assert (await store.get_state("device-1")).get("session") is None

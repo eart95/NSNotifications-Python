@@ -35,7 +35,7 @@ def device(**overrides):
         apns_token="abc",
         push_to_start_token="def",
         activity_token=None,
-        activity_episode_id=None,
+        activity_session_id=None,
         bundle_id="com.enricoartuso.GlooMDI",
         environment="development",
         unit=Unit.MGDL,

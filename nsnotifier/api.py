@@ -13,6 +13,10 @@ Four endpoints, and each one exists to remove a moving part from the old setup:
 * ``POST /v1/tick`` lets something *else* own the schedule — a platform cron, a
   GitHub Action, a Nightscout webhook — without this process having to be the
   thing that wakes up. See ``docs/DEPLOYMENT.md``.
+* ``POST /v1/devices/{id}/request-start`` puts a card on the Lock Screen because
+  a person asked, rather than because glucose did.
+* ``POST /v1/devices/{id}/dismiss`` is the phone reporting that the user swiped
+  the card away, so the service stops trying to keep it alive.
 """
 
 from __future__ import annotations
@@ -93,7 +97,7 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
             "register: %s (%s, activity=%s)",
             device_id,
             registration.get("environment"),
-            registration.get("activityEpisodeID") or "-",
+            registration.get("activitySessionID") or registration.get("activityEpisodeID") or "-",
         )
         return {"status": "ok"}
 
@@ -116,17 +120,17 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
 
     @app.post("/v1/devices/{device_id}/request-start", dependencies=[Depends(authorise)])
     async def request_start(device_id: str, body: Optional[dict[str, Any]] = None) -> JSONResponse:
-        """Start a Live Activity on this device now, outside the episode rules.
+        """Start a Live Activity on this device now, outside the rules.
 
         Body: ``{"durationSeconds": 7200}`` — optional; clamped to between five
         minutes and the eight hours iOS allows an activity to live.
 
-        The card it starts is a real one: recorded as a manual episode,
-        refreshed with current glucose by every tick exactly like an automatic
-        one, and ended on its own clock when the duration runs out. It is kept
-        apart from the automatic episode rather than written into the same slot,
-        and stands down the moment a real episode begins — see
-        `NotifierService.request_start`.
+        The card it starts is an ordinary one: a session holding a `manual`
+        episode, refreshed with current glucose by every tick like any other,
+        and ended on its own clock when the duration runs out. What it does not
+        get is priority — the moment the rules say something real is happening,
+        the card changes to that in place and comes back afterwards if it has
+        time left. See `NotifierService.request_start`.
         """
         result = await service.request_start(
             device_id, duration_seconds=(body or {}).get("durationSeconds")
@@ -135,6 +139,22 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
         # useful part of a 502 here is *what Apple said*, and `detail` alone
         # cannot carry it.
         return JSONResponse(result.as_dict(), status_code=result.status)
+
+    @app.post("/v1/devices/{device_id}/dismiss", dependencies=[Depends(authorise)])
+    async def dismiss(device_id: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """The user swiped the card away. Forget it.
+
+        Body: ``{"sessionID": "s.1770000000"}`` — optional, and worth sending: a
+        dismissal that arrives after the card it refers to has been replaced
+        must not take down its successor.
+
+        Without this the service keeps an ended activity in its head, finds no
+        token to update, and — because a session with no activity looks exactly
+        like a start push that never arrived — pushes a start again. A card that
+        comes back twice after being dismissed is worse than one that never
+        appeared.
+        """
+        return await service.dismiss(device_id, session_id=(body or {}).get("sessionID"))
 
     @app.post("/v1/devices/{device_id}/test", dependencies=[Depends(authorise)])
     async def send_test(device_id: str) -> dict[str, Any]:
@@ -163,17 +183,17 @@ def create_app(config: Config, store: Store, service: NotifierService) -> FastAP
                     "environment": device.get("environment"),
                     "hasAPNsToken": bool(device.get("apnsToken")),
                     "hasPushToStartToken": bool(device.get("pushToStartToken")),
-                    # Reported separately from `activityEpisodeID` because the
+                    # Reported separately from `activitySessionID` because the
                     # two go missing for different reasons and the fix is
-                    # different for each. An episode id with no token is a phone
-                    # that saw the activity but could not hand over the token
-                    # addressing it; a token with no episode id is a pairing
+                    # different for each. A session id with no token is a phone
+                    # that saw the card but could not hand over the token
+                    # addressing it; a token with no session id is a pairing
                     # that was written apart, which the app is built to make
                     # impossible. Both end in the same silent skip on the update
                     # path, and without this row they were indistinguishable
                     # from here.
                     "hasActivityToken": bool(device.get("activityToken")),
-                    "activityEpisodeID": device.get("activityEpisodeID"),
+                    "activitySessionID": device.get("activitySessionID"),
                     "registeredAt": device.get("registeredAt"),
                     "alertsEnabled": device.get("alertsEnabled"),
                     "liveActivitiesEnabled": device.get("liveActivitiesEnabled"),

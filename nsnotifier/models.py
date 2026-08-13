@@ -13,6 +13,14 @@ Two conventions run through the whole module and both come from the phone:
   reference-date offset.
 * **Glucose is canonical mg/dL everywhere.** ``unit`` says how to *print* it and
   nothing else, exactly as in the app.
+
+The nouns to have straight before reading anything else:
+
+* a **session** is one Live Activity — one card on the Lock Screen, from the
+  moment it appears until it goes away. There is never more than one.
+* an **episode** is a *reason* for that card: a low, a fast movement, a meal,
+  or that the user asked for one. A session runs through as many episodes as it
+  needs to, without the card ever leaving the screen.
 """
 
 from __future__ import annotations
@@ -98,24 +106,41 @@ class Treatment:
 
 
 class EpisodeKind(str, Enum):
-    HYPO_RISK = "hypoRisk"
-    CARB_RISE = "carbRise"
+    """Mirrors ``GlucoseEpisodeKind``."""
 
-    @property
-    def priority(self) -> int:
-        return 0 if self is EpisodeKind.HYPO_RISK else 1
+    MANUAL = "manual"
+    LOW = "low"
+    VARIATION = "variation"
+    MEAL = "meal"
 
     @property
     def title(self) -> str:
-        return "Heading low" if self is EpisodeKind.HYPO_RISK else "Carbs on board"
+        return {
+            EpisodeKind.MANUAL: "Glucose",
+            EpisodeKind.LOW: "Low glucose",
+            EpisodeKind.VARIATION: "Moving fast",
+            EpisodeKind.MEAL: "After a meal",
+        }[self]
+
+    @property
+    def starts_automatically(self) -> bool:
+        """Only ``manual`` may not: it exists because a person pressed a
+        button, and nothing about glucose can imply that."""
+        return self is not EpisodeKind.MANUAL
+
+
+class Direction(str, Enum):
+    RISING = "rising"
+    FALLING = "falling"
 
 
 class EndReason(str, Enum):
     RECOVERED = "recovered"
-    SUPERSEDED = "superseded"
+    COMPLETED = "completed"
     EXPIRED = "expired"
     WENT_STALE = "wentStale"
     CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
 
 
 class AlertKind(str, Enum):
@@ -142,73 +167,267 @@ class AlertKind(str, Enum):
 
 @dataclass(frozen=True)
 class Episode:
+    """One run of one kind, with its own deadline and its own progress towards
+    clearing."""
+
     kind: EpisodeKind
     started_at: float
-    sequence: int = 0
+    #: Set for every kind. For ``manual`` and ``meal`` it is the ordinary way
+    #: the episode finishes; for ``low`` and ``variation`` it is a backstop
+    #: against a rule that never clears.
+    ends_at: float
+    direction: Optional[Direction] = None
+    #: When the exit condition most recently *started* holding, or None if it
+    #: does not hold now. This is what "over 85 for 15 minutes" is made of.
+    clearing_since: Optional[float] = None
 
     @property
     def identifier(self) -> str:
-        # Must match `GlucoseEpisode.id` in Swift exactly — the phone compares
-        # it against the attributes of whatever activity is on screen.
+        # Must match `GlucoseEpisode.id` in Swift exactly.
         return f"{self.kind.value}.{int(self.started_at)}"
 
-    def advanced(self) -> "Episode":
-        return Episode(self.kind, self.started_at, self.sequence + 1)
+    @property
+    def priority(self) -> int:
+        """Which episode wins when two apply at once. Lower is more urgent.
+
+        The interesting entry is ``variation``, which sits on both sides of
+        ``meal``. A fall steep enough to qualify while a meal is on screen is
+        the overcorrection you want to know about; a *rise* that steep during a
+        meal is the meal.
+        """
+        if self.kind is EpisodeKind.LOW:
+            return 0
+        if self.kind is EpisodeKind.VARIATION:
+            return 1 if self.direction is Direction.FALLING else 3
+        if self.kind is EpisodeKind.MEAL:
+            return 2
+        return 4
+
+    def suspended(self) -> "Episode":
+        """Cleared on suspension, so a resumed episode earns its dwell again
+        from the glucose actually in front of it."""
+        return Episode(self.kind, self.started_at, self.ends_at, self.direction, None)
+
+    def clearing(self, since: Optional[float]) -> "Episode":
+        return Episode(self.kind, self.started_at, self.ends_at, self.direction, since)
+
+    def ending(self, at: float) -> "Episode":
+        return Episode(self.kind, self.started_at, at, self.direction, self.clearing_since)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind.value, "startedAt": self.started_at, "sequence": self.sequence}
+        return {
+            "kind": self.kind.value,
+            "startedAt": self.started_at,
+            "endsAt": self.ends_at,
+            "direction": self.direction.value if self.direction else None,
+            "clearingSince": self.clearing_since,
+        }
 
     @staticmethod
     def from_dict(raw: Optional[dict[str, Any]]) -> Optional["Episode"]:
         if not raw:
             return None
         try:
+            direction = raw.get("direction")
+            clearing = raw.get("clearingSince")
             return Episode(
                 kind=EpisodeKind(raw["kind"]),
                 started_at=float(raw["startedAt"]),
-                sequence=int(raw.get("sequence", 0)),
+                ends_at=float(raw["endsAt"]),
+                direction=Direction(direction) if direction else None,
+                clearing_since=float(clearing) if clearing is not None else None,
             )
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             return None
 
 
 @dataclass(frozen=True)
-class ManualEpisode:
-    """An episode a person asked for, rather than one glucose implied.
+class Session:
+    """One Live Activity, and everything both writers need to agree about it."""
 
-    It is an ordinary `Episode` with an expiry bolted on, and it is kept apart
-    from the automatic one in the device's state for a reason: the episode rules
-    would end it almost immediately. A meal card with no carbohydrate behind it
-    is "settled" fifteen minutes in by every measure `episodes.evaluate` has, and
-    it would be right — the card is not there because of a meal, it is there
-    because someone asked for it. So it lives its own life and ends on its own
-    clock.
-
-    What it does *not* get is priority. A real episode takes the Lock Screen
-    back the moment the rules say one has begun; a card someone asked for should
-    never be the reason a hypo warning has nowhere to go.
-    """
-
+    id: str
+    started_at: float
+    #: Monotonic across the whole session, not per episode. The card survives a
+    #: change of kind, so a counter that restarted with each episode would have
+    #: every update after a switch discarded by the phone as stale.
+    sequence: int
     episode: Episode
-    expires_at: float
+    #: Episodes displaced by something more urgent, newest last.
+    suspended: tuple[Episode, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"episode": self.episode.to_dict(), "expiresAt": self.expires_at}
+    #: Deep enough for the only case that happens in practice — a manual card
+    #: interrupted by a meal, interrupted by a low.
+    MAXIMUM_SUSPENDED = 2
 
     @staticmethod
-    def from_dict(raw: Optional[dict[str, Any]]) -> Optional["ManualEpisode"]:
+    def identifier(started_at: float) -> str:
+        """``s.`` prefixed so it can never be mistaken for an episode id."""
+        return f"s.{int(started_at)}"
+
+    def advanced(self) -> "Session":
+        return Session(self.id, self.started_at, self.sequence + 1, self.episode, self.suspended)
+
+    def with_episode(self, episode: Episode) -> "Session":
+        return Session(self.id, self.started_at, self.sequence, episode, self.suspended)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "startedAt": self.started_at,
+            "sequence": self.sequence,
+            "episode": self.episode.to_dict(),
+            "suspended": [episode.to_dict() for episode in self.suspended],
+        }
+
+    @staticmethod
+    def from_dict(raw: Optional[dict[str, Any]]) -> Optional["Session"]:
         if not raw:
             return None
         episode = Episode.from_dict(raw.get("episode"))
         if episode is None:
             return None
         try:
-            return ManualEpisode(episode=episode, expires_at=float(raw["expiresAt"]))
-        except (KeyError, TypeError, ValueError):
+            suspended = [Episode.from_dict(item) for item in raw.get("suspended") or []]
+            return Session(
+                id=str(raw["id"]),
+                started_at=float(raw["startedAt"]),
+                sequence=int(raw.get("sequence", 0)),
+                episode=episode,
+                suspended=tuple(item for item in suspended if item is not None),
+            )
+        except (KeyError, ValueError, TypeError):
             return None
 
-    def with_episode(self, episode: Episode) -> "ManualEpisode":
-        return ManualEpisode(episode=episode, expires_at=self.expires_at)
+
+# --- configuration ---------------------------------------------------------
+
+
+def _number(raw: dict[str, Any], key: str, fallback: float) -> float:
+    value = raw.get(key, fallback)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    # A NaN or an infinity in a threshold would make every comparison silently
+    # false, which reads as "the service never fires".
+    return fallback if not math.isfinite(value) else value
+
+
+@dataclass(frozen=True)
+class ManualRules:
+    """A card someone asked for. Its life is a clock, not a condition."""
+
+    duration: float = 2 * 3600
+    update_interval: float = 5 * 60
+
+    @staticmethod
+    def from_dict(raw: Optional[dict[str, Any]]) -> "ManualRules":
+        raw = raw or {}
+        defaults = ManualRules()
+        return ManualRules(
+            duration=_number(raw, "duration", defaults.duration),
+            update_interval=_number(raw, "updateInterval", defaults.update_interval),
+        )
+
+
+@dataclass(frozen=True)
+class LowGlucoseRules:
+    """Below the line, and how far back above it counts as over.
+
+    Both offsets hang off the suspend threshold rather than being absolute, so
+    the card follows the number the user actually tunes. At the default suspend
+    threshold of 70 they are the familiar 80 in and 85 out.
+    """
+
+    entry_offset: float = 10
+    exit_offset: float = 15
+    clear_for: float = 15 * 60
+    update_interval: float = 2 * 60
+    maximum_duration: float = 4 * 3600
+
+    @staticmethod
+    def from_dict(raw: Optional[dict[str, Any]]) -> "LowGlucoseRules":
+        raw = raw or {}
+        defaults = LowGlucoseRules()
+        return LowGlucoseRules(
+            entry_offset=_number(raw, "entryOffset", defaults.entry_offset),
+            exit_offset=_number(raw, "exitOffset", defaults.exit_offset),
+            clear_for=_number(raw, "clearFor", defaults.clear_for),
+            update_interval=_number(raw, "updateInterval", defaults.update_interval),
+            maximum_duration=_number(raw, "maximumDuration", defaults.maximum_duration),
+        )
+
+
+@dataclass(frozen=True)
+class VariationRules:
+    """Fast, sustained, one-directional movement.
+
+    ``slope_per_minute`` is deliberately steep — 3 mg/dL/min is 45 mg/dL inside
+    the window. A card that appeared for every ordinary post-breakfast rise
+    would be on screen most mornings, and a card that is usually there is one
+    nobody reads.
+    """
+
+    slope_per_minute: float = 3
+    window: float = 15 * 60
+    steady_slope_per_minute: float = 1
+    settle_for: float = 15 * 60
+    reversal_tolerance: float = 3
+    rising_update_interval: float = 5 * 60
+    falling_update_interval: float = 2 * 60
+    maximum_duration: float = 4 * 3600
+
+    @staticmethod
+    def from_dict(raw: Optional[dict[str, Any]]) -> "VariationRules":
+        raw = raw or {}
+        defaults = VariationRules()
+        return VariationRules(
+            slope_per_minute=_number(raw, "slopePerMinute", defaults.slope_per_minute),
+            window=_number(raw, "window", defaults.window),
+            steady_slope_per_minute=_number(
+                raw, "steadySlopePerMinute", defaults.steady_slope_per_minute
+            ),
+            settle_for=_number(raw, "settleFor", defaults.settle_for),
+            reversal_tolerance=_number(raw, "reversalTolerance", defaults.reversal_tolerance),
+            rising_update_interval=_number(
+                raw, "risingUpdateInterval", defaults.rising_update_interval
+            ),
+            falling_update_interval=_number(
+                raw, "fallingUpdateInterval", defaults.falling_update_interval
+            ),
+            maximum_duration=_number(raw, "maximumDuration", defaults.maximum_duration),
+        )
+
+
+@dataclass(frozen=True)
+class MealRules:
+    """Carbohydrate going in, not carbohydrate on board.
+
+    A 60 g meal still leaves 40 g on board an hour later, and a card that
+    reacted to that would appear long after the interesting part.
+    """
+
+    grams: float = 30
+    window: float = 20 * 60
+    duration: float = 3 * 3600
+    settle_for: float = 30 * 60
+    steady_slope_per_minute: float = 1
+    update_interval: float = 5 * 60
+
+    @staticmethod
+    def from_dict(raw: Optional[dict[str, Any]]) -> "MealRules":
+        raw = raw or {}
+        defaults = MealRules()
+        return MealRules(
+            grams=_number(raw, "grams", defaults.grams),
+            window=_number(raw, "window", defaults.window),
+            duration=_number(raw, "duration", defaults.duration),
+            settle_for=_number(raw, "settleFor", defaults.settle_for),
+            steady_slope_per_minute=_number(
+                raw, "steadySlopePerMinute", defaults.steady_slope_per_minute
+            ),
+            update_interval=_number(raw, "updateInterval", defaults.update_interval),
+        )
 
 
 @dataclass(frozen=True)
@@ -218,60 +437,102 @@ class EpisodeConfiguration:
     The defaults exist only so a malformed registration degrades to something
     sane. In normal operation every value here came off the phone, because the
     phone is where the user edits them — a service holding its own copy is a
-    service that will one day alert at a threshold changed a month ago.
+    service that will one day decide something at a threshold changed a month
+    ago.
     """
 
-    low: float = 70.0
+    suspend_threshold: float = 70.0
     in_range_lower: float = 70.0
     in_range_upper: float = 180.0
-    clear_margin: float = 10.0
-    prediction_horizon: float = 30 * 60
-    carb_rise_grams_per_hour: float = 60.0
-    carb_rise_window: float = 30 * 60
-    minimum_duration: float = 15 * 60
-    maximum_duration: float = 4 * 3600
-    restart_cooldown: float = 15 * 60
     stale_after: float = 25 * 60
+    restart_cooldown: float = 15 * 60
+    prediction_horizon: float = 30 * 60
+    enabled_kinds: frozenset[EpisodeKind] = frozenset(EpisodeKind)
+    manual: ManualRules = field(default_factory=ManualRules)
+    low_glucose: LowGlucoseRules = field(default_factory=LowGlucoseRules)
+    variation: VariationRules = field(default_factory=VariationRules)
+    meal: MealRules = field(default_factory=MealRules)
 
     @property
-    def hypo_clear_level(self) -> float:
-        return self.in_range_lower + self.clear_margin
+    def low_entry_level(self) -> float:
+        """Below this, a low episode starts. 80 mg/dL at the default."""
+        return self.suspend_threshold + self.low_glucose.entry_offset
 
     @property
-    def carb_clear_level(self) -> float:
-        return self.in_range_upper - self.clear_margin
+    def low_exit_level(self) -> float:
+        """Above this — for ``low_glucose.clear_for`` — it ends. 85 by default."""
+        return self.suspend_threshold + self.low_glucose.exit_offset
 
-    @property
-    def carb_rise_grams_in_window(self) -> float:
-        return self.carb_rise_grams_per_hour * (self.carb_rise_window / 3600)
+    def is_enabled(self, kind: EpisodeKind) -> bool:
+        # `manual` is always available: it is a button, and a button that does
+        # nothing is worse than no button.
+        return kind is EpisodeKind.MANUAL or kind in self.enabled_kinds
+
+    def update_interval(self, episode: Episode) -> float:
+        """How often to push a state for this episode."""
+        if episode.kind is EpisodeKind.MANUAL:
+            return self.manual.update_interval
+        if episode.kind is EpisodeKind.LOW:
+            return self.low_glucose.update_interval
+        if episode.kind is EpisodeKind.VARIATION:
+            return (
+                self.variation.falling_update_interval
+                if episode.direction is Direction.FALLING
+                else self.variation.rising_update_interval
+            )
+        return self.meal.update_interval
+
+    def duration(self, kind: EpisodeKind) -> float:
+        """How long an episode of this kind lives if nothing ends it sooner."""
+        if kind is EpisodeKind.MANUAL:
+            return self.manual.duration
+        if kind is EpisodeKind.LOW:
+            return self.low_glucose.maximum_duration
+        if kind is EpisodeKind.VARIATION:
+            return self.variation.maximum_duration
+        return self.meal.duration
+
+    def expiry_reason(self, kind: EpisodeKind) -> EndReason:
+        """What reaching ``ends_at`` means for this kind.
+
+        A manual card and a meal card are *finished* when their clock runs out —
+        that is what they were for. A low still going at its ceiling is a rule
+        that failed to clear, which is a different thing and says so.
+        """
+        if kind in (EpisodeKind.MANUAL, EpisodeKind.MEAL):
+            return EndReason.COMPLETED
+        return EndReason.EXPIRED
 
     @staticmethod
     def from_dict(raw: Optional[dict[str, Any]]) -> "EpisodeConfiguration":
         raw = raw or {}
         defaults = EpisodeConfiguration()
 
-        def number(key: str, fallback: float) -> float:
-            value = raw.get(key, fallback)
-            try:
-                value = float(value)
-            except (TypeError, ValueError):
-                return fallback
-            # A NaN or an infinity in a threshold would make every comparison
-            # below silently false, which reads as "the service never fires".
-            return fallback if not math.isfinite(value) else value
+        kinds: set[EpisodeKind] = set()
+        listed = raw.get("enabledKinds")
+        if listed is None:
+            kinds = set(EpisodeKind)
+        else:
+            for value in listed:
+                try:
+                    kinds.add(EpisodeKind(value))
+                except ValueError:
+                    # A kind this build has never heard of. Ignored rather than
+                    # fatal: a newer app must not be able to break registration.
+                    continue
 
         return EpisodeConfiguration(
-            low=number("low", defaults.low),
-            in_range_lower=number("inRangeLower", defaults.in_range_lower),
-            in_range_upper=number("inRangeUpper", defaults.in_range_upper),
-            clear_margin=number("clearMargin", defaults.clear_margin),
-            prediction_horizon=number("predictionHorizon", defaults.prediction_horizon),
-            carb_rise_grams_per_hour=number("carbRiseGramsPerHour", defaults.carb_rise_grams_per_hour),
-            carb_rise_window=number("carbRiseWindow", defaults.carb_rise_window),
-            minimum_duration=number("minimumDuration", defaults.minimum_duration),
-            maximum_duration=number("maximumDuration", defaults.maximum_duration),
-            restart_cooldown=number("restartCooldown", defaults.restart_cooldown),
-            stale_after=number("staleAfter", defaults.stale_after),
+            suspend_threshold=_number(raw, "suspendThreshold", defaults.suspend_threshold),
+            in_range_lower=_number(raw, "inRangeLower", defaults.in_range_lower),
+            in_range_upper=_number(raw, "inRangeUpper", defaults.in_range_upper),
+            stale_after=_number(raw, "staleAfter", defaults.stale_after),
+            restart_cooldown=_number(raw, "restartCooldown", defaults.restart_cooldown),
+            prediction_horizon=_number(raw, "predictionHorizon", defaults.prediction_horizon),
+            enabled_kinds=frozenset(kinds),
+            manual=ManualRules.from_dict(raw.get("manual")),
+            low_glucose=LowGlucoseRules.from_dict(raw.get("lowGlucose")),
+            variation=VariationRules.from_dict(raw.get("variation")),
+            meal=MealRules.from_dict(raw.get("meal")),
         )
 
 
@@ -297,21 +558,13 @@ class AlertThresholds:
     def from_dict(raw: Optional[dict[str, Any]]) -> "AlertThresholds":
         raw = raw or {}
         defaults = AlertThresholds()
-
-        def number(key: str, fallback: float) -> float:
-            try:
-                value = float(raw.get(key, fallback))
-            except (TypeError, ValueError):
-                return fallback
-            return fallback if not math.isfinite(value) else value
-
         return AlertThresholds(
-            low=number("low", defaults.low),
-            high=number("high", defaults.high),
-            stale_after=number("staleAfter", defaults.stale_after),
-            prediction_horizon=number("predictionHorizon", defaults.prediction_horizon),
-            prediction_lead_time=number("predictionLeadTime", defaults.prediction_lead_time),
-            re_alert_interval=number("reAlertInterval", defaults.re_alert_interval),
+            low=_number(raw, "low", defaults.low),
+            high=_number(raw, "high", defaults.high),
+            stale_after=_number(raw, "staleAfter", defaults.stale_after),
+            prediction_horizon=_number(raw, "predictionHorizon", defaults.prediction_horizon),
+            prediction_lead_time=_number(raw, "predictionLeadTime", defaults.prediction_lead_time),
+            re_alert_interval=_number(raw, "reAlertInterval", defaults.re_alert_interval),
         )
 
 
@@ -323,7 +576,7 @@ class Device:
     apns_token: Optional[str]
     push_to_start_token: Optional[str]
     activity_token: Optional[str]
-    activity_episode_id: Optional[str]
+    activity_session_id: Optional[str]
     bundle_id: str
     environment: str
     unit: Unit
@@ -345,8 +598,6 @@ class Device:
             try:
                 kinds.add(AlertKind(value))
             except ValueError:
-                # A kind this build has never heard of. Ignored rather than
-                # fatal: a newer app must not be able to break registration.
                 continue
 
         try:
@@ -359,7 +610,10 @@ class Device:
             apns_token=raw.get("apnsToken") or None,
             push_to_start_token=raw.get("pushToStartToken") or None,
             activity_token=raw.get("activityToken") or None,
-            activity_episode_id=raw.get("activityEpisodeID") or None,
+            # `activityEpisodeID` is what builds before the session rework sent.
+            # Read as a fallback so a phone that has not been updated yet
+            # registers something addressable rather than nothing at all.
+            activity_session_id=raw.get("activitySessionID") or raw.get("activityEpisodeID") or None,
             bundle_id=str(raw.get("bundleID", "")),
             environment="production" if raw.get("environment") == "production" else "development",
             unit=unit,
@@ -396,3 +650,19 @@ def slope_per_minute(readings: Sequence[Reading], sample_count: int = 4) -> Opti
     if minutes <= 0:
         return None
     return (recent[-1].mgdl - recent[0].mgdl) / minutes
+
+
+def slope_over_window(readings: Sequence[Reading], window: float) -> Optional[float]:
+    """mg/dL per minute across a trailing window, or None when there is not
+    enough of one to say. Mirrors ``GlucoseEpisodeEvaluator.slopePerMinute``."""
+    readings = list(readings)
+    if not readings:
+        return None
+    last = readings[-1]
+    points = [r for r in readings if r.at >= last.at - window]
+    if len(points) < 2:
+        return None
+    minutes = (last.at - points[0].at) / 60
+    if minutes <= 0:
+        return None
+    return (last.mgdl - points[0].mgdl) / minutes
